@@ -10,9 +10,17 @@
 
 ### 2. Dependencies
 - ✅ Added `iflow-cli-sdk>=0.1.0` to pyproject.toml
+- ✅ Removed `docker>=7.0.0` dependency (no longer needed)
 - ✅ Updated ENVIRONMENT_SETUP.md with new configuration
 
-### 3. Agent Refactoring (SDK-Based)
+### 3. Docker Cleanup
+- ✅ Deleted `dockerfiles/agent-base.Dockerfile`
+- ✅ Deleted `dockerfiles/iflow-agent.Dockerfile`
+- ✅ Deleted `dockerfiles/claude-agent.Dockerfile`
+- ✅ Deleted `dockerfiles/gemini-agent.Dockerfile`
+- ✅ Deleted `scripts/agent_runner.py`
+
+### 4. Agent Refactoring (SDK-Based)
 
 #### iFlow Agent (`app/agents/iflow_agent.py`)
 - ✅ Completely rewritten to use `iflow-cli-sdk`
@@ -36,7 +44,7 @@
 - ✅ Artificially limited to 200K for fair comparison
 - ✅ Loads repository files directly from filesystem
 
-### 4. API Endpoints
+### 5. API Endpoints
 - ✅ Created `/api/v1/tasks/{task_id}/comparison` endpoint
 - ✅ Returns side-by-side comparison of all agents
 - ✅ Extracts metrics: tokens, iterations, compression status

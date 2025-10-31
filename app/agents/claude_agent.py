@@ -13,6 +13,7 @@ from app.agents.base import (
     AgentMetadata, AgentExecutionError
 )
 from app.config import settings
+from app.services.task_logger import AgentSessionLogger
 
 logger = logging.getLogger(__name__)
 
@@ -105,23 +106,31 @@ class ClaudeAgent(AgentAdapter):
         # Create transcript file
         transcript_path = session.output_dir / "transcript.txt"
         
+        # Create session logger for UI streaming
+        session_logger = AgentSessionLogger(session.task_id, "claude")
+        
         try:
             # Run async session
-            result = asyncio.run(self._run_async_session(session, transcript_path))
+            result = asyncio.run(self._run_async_session(session, transcript_path, session_logger))
             
             # Add file paths to result
             result["artifacts"]["transcript"] = str(transcript_path)
+            
+            # Close session logger
+            session_logger.close_session("completed", result.get("artifacts", {}))
             
             return result
             
         except Exception as e:
             self.logger.error(f"Claude session failed: {e}", exc_info=True)
+            session_logger.close_session("failed", {"error": str(e)})
             return self.handle_error(e, session)
     
     async def _run_async_session(
         self,
         session: AgentSession,
-        transcript_path: Path
+        transcript_path: Path,
+        session_logger: AgentSessionLogger
     ) -> Dict[str, Any]:
         """Run the async Claude session using Anthropic SDK."""
         
@@ -142,9 +151,13 @@ class ClaudeAgent(AgentAdapter):
                 log_file.write(f"Repository Context Loaded: {len(repo_context)} characters\n")
                 log_file.write("=" * 80 + "\n\n")
                 
+                init_prompt = f"{repo_context}\n\nThis is a code repository. Please analyze it and be ready to answer questions about it."
                 messages = [
-                    {"role": "user", "content": f"{repo_context}\n\nThis is a code repository. Please analyze it and be ready to answer questions about it."}
+                    {"role": "user", "content": init_prompt}
                 ]
+                
+                # Log to UI
+                session_logger.log_prompt_sent(init_prompt, "repo_initialization")
                 
                 # Initial context loading
                 response = await self.client.messages.create(
@@ -160,6 +173,10 @@ class ClaudeAgent(AgentAdapter):
                 log_file.write(f"Tokens used: {total_tokens:,} / {self.max_tokens:,}\n")
                 log_file.write("=" * 80 + "\n\n")
                 
+                # Log to UI
+                session_logger.log_agent_response(response.content[0].text, "repo_analysis")
+                session_logger.log_context_stats(f"{total_tokens}/{self.max_tokens}", f"Tokens: {total_tokens:,}")
+                
                 milestones.append("repo_loaded")
                 stats["initial_tokens"] = total_tokens
                 
@@ -168,6 +185,7 @@ class ClaudeAgent(AgentAdapter):
                 self.logger.info("PHASE 2: Pre-Compression Analysis")
                 self.logger.info("=" * 80)
                 
+                session_logger.log_prompt_sent(session.prompts["pre"], "pre_compression")
                 messages.append({"role": "user", "content": session.prompts["pre"]})
                 
                 response = await self.client.messages.create(
@@ -184,6 +202,9 @@ class ClaudeAgent(AgentAdapter):
                 log_file.write(f"ASSISTANT: {response.content[0].text}\n\n")
                 log_file.write(f"Tokens used: {total_tokens:,} / {self.max_tokens:,}\n")
                 log_file.write("=" * 80 + "\n\n")
+                
+                session_logger.log_agent_response(response.content[0].text, "pre_compression_response")
+                session_logger.log_context_stats(f"{total_tokens}/{self.max_tokens}", f"Tokens: {total_tokens:,}")
                 
                 milestones.append("pre_compression")
                 stats["pre_compression_tokens"] = total_tokens

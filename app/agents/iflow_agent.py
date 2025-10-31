@@ -17,6 +17,7 @@ from app.agents.base import (
     AgentMetadata, AgentNotFoundError, AgentExecutionError, AgentTimeoutError
 )
 from app.config import settings
+from app.services.task_logger import AgentSessionLogger
 
 logger = logging.getLogger(__name__)
 
@@ -119,14 +120,20 @@ class IFlowAgent(AgentAdapter):
         client: IFlowClient,
         message: str,
         log_file,
+        session_logger: AgentSessionLogger,
         timeout: int = 300
     ) -> Dict[str, Any]:
         """Send a message and collect all responses until task finishes."""
         self.logger.info(f"📤 Sending: {message[:100]}...")
+        
+        # Log to transcript file
         log_file.write(f"\n{'='*80}\n")
         log_file.write(f"[{datetime.now().isoformat()}] USER: {message}\n")
         log_file.write(f"{'='*80}\n")
         log_file.flush()
+        
+        # Log to UI stream
+        session_logger.log_prompt_sent(message, "user_prompt")
         
         await client.send_message(message)
         
@@ -180,6 +187,12 @@ class IFlowAgent(AgentAdapter):
         
         full_response = "".join(response_text)
         
+        # Log response to UI stream
+        session_logger.log_agent_response(
+            full_response,
+            f"response_{len(tool_calls)}_tools_{len(plans)}_plans"
+        )
+        
         return {
             "response": full_response,
             "tool_calls": tool_calls,
@@ -195,17 +208,24 @@ class IFlowAgent(AgentAdapter):
         # Create transcript file
         transcript_path = session.output_dir / "transcript.txt"
         
+        # Create session logger for UI streaming
+        session_logger = AgentSessionLogger(session.task_id, "iflow")
+        
         try:
             # Run async session
-            result = asyncio.run(self._run_async_session(session, transcript_path))
+            result = asyncio.run(self._run_async_session(session, transcript_path, session_logger))
             
             # Add file paths to result
             result["artifacts"]["transcript"] = str(transcript_path)
+            
+            # Close session logger
+            session_logger.close_session("completed", result.get("artifacts", {}))
             
             return result
             
         except Exception as e:
             self.logger.error(f"iFlow session failed: {e}", exc_info=True)
+            session_logger.close_session("failed", {"error": str(e)})
             return self.handle_error(e, session)
         finally:
             # Cleanup iFlow process
@@ -221,7 +241,8 @@ class IFlowAgent(AgentAdapter):
     async def _run_async_session(
         self,
         session: AgentSession,
-        transcript_path: Path
+        transcript_path: Path,
+        session_logger: AgentSessionLogger
     ) -> Dict[str, Any]:
         """Run the async iFlow session using SDK."""
         
@@ -258,7 +279,7 @@ class IFlowAgent(AgentAdapter):
                     self.logger.info("=" * 80)
                     
                     init_result = await self._send_and_collect(
-                        client, "/init", log_file, timeout=600
+                        client, "/init", log_file, session_logger, timeout=600
                     )
                     responses.append({"phase": "init", **init_result})
                     milestones.append("repo_initialized")
@@ -273,7 +294,7 @@ class IFlowAgent(AgentAdapter):
                     self.logger.info("=" * 80)
                     
                     pre_result = await self._send_and_collect(
-                        client, session.prompts["pre"], log_file, timeout=300
+                        client, session.prompts["pre"], log_file, session_logger, timeout=300
                     )
                     responses.append({"phase": "pre_compression", **pre_result})
                     milestones.append("pre_compression")
@@ -294,7 +315,7 @@ class IFlowAgent(AgentAdapter):
                         self.logger.info(f"Deep-dive iteration #{deep_dive_count}")
                         
                         deep_result = await self._send_and_collect(
-                            client, session.prompts["deep"], log_file, timeout=300
+                            client, session.prompts["deep"], log_file, session_logger, timeout=300
                         )
                         responses.append({"phase": f"deep_dive_{deep_dive_count}", **deep_result})
                         
@@ -320,7 +341,7 @@ class IFlowAgent(AgentAdapter):
                     self.logger.info("=" * 80)
                     
                     memory_result = await self._send_and_collect(
-                        client, session.prompts["memory_only"], log_file, timeout=300
+                        client, session.prompts["memory_only"], log_file, session_logger, timeout=300
                     )
                     responses.append({"phase": "memory_only", **memory_result})
                     milestones.append("memory_only")
@@ -331,7 +352,7 @@ class IFlowAgent(AgentAdapter):
                     self.logger.info("=" * 80)
                     
                     eval_result = await self._send_and_collect(
-                        client, session.prompts["eval"], log_file, timeout=300
+                        client, session.prompts["eval"], log_file, session_logger, timeout=300
                     )
                     responses.append({"phase": "evaluation", **eval_result})
                     milestones.append("evaluation_complete")

@@ -213,7 +213,8 @@ async def list_artifacts(
     total_size = 0
     
     for agent_run in agent_runs:
-        agent_name = agent_run.agent.value
+        # Handle both string and enum types
+        agent_name = agent_run.agent.value if hasattr(agent_run.agent, 'value') else agent_run.agent
         agent_artifacts = {}
         
         for artifact_name, artifact_path in agent_run.artifacts.items():
