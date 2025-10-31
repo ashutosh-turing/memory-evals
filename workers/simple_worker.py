@@ -589,8 +589,8 @@ class SimpleWorker:
                 
             elif dim == RubricDimension.TTL:  # Token-to-Learning efficiency
                 # Score based on token usage efficiency
-                total_tokens = stats.get("total_tokens_estimate", 0)
-                deep_dive_iterations = stats.get("deep_dive_iterations", 0)
+                total_tokens = int(stats.get("total_tokens_estimate", 0)) if stats.get("total_tokens_estimate") else 0
+                deep_dive_iterations = int(stats.get("deep_dive_iterations", 0)) if stats.get("deep_dive_iterations") else 0
                 if deep_dive_iterations > 0:
                     # More iterations with reasonable token usage = better
                     score = min(1.0, (deep_dive_iterations / 10.0) * 0.8)
@@ -606,9 +606,9 @@ class SimpleWorker:
                 
             elif dim == RubricDimension.SF:  # Scalability & Future-proofing
                 # Score based on handling large context and compression
-                compression_detected = stats.get("compression_detected", False)
-                max_tokens = stats.get("max_tokens_configured", 200000)
-                total_tokens = stats.get("total_tokens_estimate", 0)
+                compression_detected = str(stats.get("compression_detected", "False")).lower() == "true"
+                max_tokens = int(stats.get("max_tokens_configured", 200000)) if stats.get("max_tokens_configured") else 200000
+                total_tokens = int(stats.get("total_tokens_estimate", 0)) if stats.get("total_tokens_estimate") else 0
                 
                 if compression_detected:
                     score = 0.9  # Successfully handled compression

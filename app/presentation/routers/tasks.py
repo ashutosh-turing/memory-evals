@@ -515,7 +515,7 @@ async def get_task_comparison(
     return comparison
 
 
-@router.get("/api/v1/leaderboard/{task_id}")
+@router.get("/{task_id}/leaderboard")
 async def get_task_leaderboard(
     task_id: str,
     session: Session = Depends(get_session)

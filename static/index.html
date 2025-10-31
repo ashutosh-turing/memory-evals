@@ -504,7 +504,7 @@
                 
                 async loadTaskLeaderboard(taskId) {
                     try {
-                        const response = await axios.get(`/api/v1/leaderboard/${taskId}`);
+                        const response = await axios.get(`/api/v1/tasks/${taskId}/leaderboard`);
                         this.taskLeaderboards[taskId] = response.data.leaderboard;
                     } catch (error) {
                         console.error('Failed to load leaderboard:', error);
