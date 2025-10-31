@@ -142,8 +142,8 @@
                     <div class="text-sm text-gray-500">Errors</div>
                 </div>
                 <div>
-                    <div class="text-2xl font-bold text-green-600">{{ filteredLogs.length }}</div>
-                    <div class="text-sm text-gray-500">Filtered</div>
+                    <div class="text-2xl font-bold text-green-600">{{ logs.length }}</div>
+                    <div class="text-sm text-gray-500">Displayed</div>
                 </div>
                 <div>
                     <div class="text-2xl font-bold text-blue-600">{{ connectionDuration }}</div>
@@ -156,11 +156,11 @@
         <div class="bg-white rounded-lg shadow-md overflow-hidden">
             <div class="bg-gray-800 text-white px-4 py-2 flex items-center justify-between">
                 <h3 class="font-medium">Live Execution Logs</h3>
-                <div class="text-sm">{{ filteredLogs.length }} entries</div>
+                <div class="text-sm">{{ logs.length }} entries</div>
             </div>
             
             <div ref="logContainer" class="log-container overflow-y-auto bg-gray-900 text-green-400 font-mono text-sm">
-                <div v-if="filteredLogs.length === 0" class="p-8 text-center text-gray-400">
+                <div v-if="logs.length === 0" class="p-8 text-center text-gray-400">
                     <div v-if="connectionStatus === 'connecting'">
                         <div class="animate-spin w-8 h-8 border-2 border-green-400 border-t-transparent rounded-full mx-auto mb-4"></div>
                         <p>Connecting to log stream...</p>
@@ -175,7 +175,7 @@
                 
                 <!-- Raw Mode -->
                 <div v-if="rawMode" class="p-4">
-                    <div v-for="(log, index) in filteredLogs" :key="index" 
+                    <div v-for="(log, index) in logs" :key="index" 
                          class="log-entry mb-2 p-2 rounded" :class="{'new': log.isNew}">
                         <pre class="whitespace-pre-wrap">{{ JSON.stringify(log, null, 2) }}</pre>
                     </div>
@@ -183,7 +183,7 @@
                 
                 <!-- Structured Mode -->
                 <div v-else class="p-4 space-y-2">
-                    <div v-for="(log, index) in filteredLogs" :key="index" 
+                    <div v-for="(log, index) in logs" :key="index" 
                          class="log-entry p-3 rounded border-l-4" :class="getLogEntryClass(log)" :style="getLogStyle(log)">
                         
                         <!-- Log Header -->
@@ -322,6 +322,9 @@
                 this.loadTaskInfo();
                 this.connectToLogStream();
                 
+                // Initial filter call
+                this.filterLogs();
+                
                 // Update connection duration every second
                 setInterval(() => {
                     if (this.connectionStartTime) {
@@ -337,10 +340,18 @@
             },
             
             watch: {
-                selectedLogLevel: 'filterLogs',
-                selectedEventType: 'filterLogs',
-                selectedAgent: 'filterLogs',
-                logs: 'filterLogs'
+                selectedLogLevel() {
+                    this.filterLogs();
+                },
+                selectedEventType() {
+                    this.filterLogs();
+                },
+                selectedAgent() {
+                    this.filterLogs();
+                },
+                logs() {
+                    this.filterLogs();
+                }
             },
             
             methods: {
@@ -491,7 +502,7 @@
                 
                 getDisplayData(log) {
                     // Filter out standard fields for cleaner display
-                    const standardFields = ['timestamp', 'task_id', 'agent', 'type', 'level', 'message'];
+                    const standardFields = ['timestamp', 'task_id', 'agent', 'type', 'level', 'message', 'isNew'];
                     const displayData = {};
                     
                     Object.keys(log).forEach(key => {

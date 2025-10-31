@@ -49,6 +49,10 @@ class AgentRunner:
         
         # Set memory limits
         self._set_resource_limits()
+        
+        # Set up iFlow authentication if this is an iflow agent
+        if agent_type == 'iflow':
+            self._setup_iflow_auth()
 
     def _parse_memory_limit(self, memory_str: str) -> int:
         """Parse memory string like '3g' to MB"""
@@ -72,6 +76,46 @@ class AgentRunner:
             logger.info(f"Set resource limits: {self.max_memory_mb}MB memory, {self.max_execution_time}s CPU")
         except Exception as e:
             logger.warning(f"Failed to set resource limits: {e}")
+    
+    def _setup_iflow_auth(self):
+        """Set up iFlow authentication by creating settings.json"""
+        try:
+            # Get credentials from environment variables
+            api_key = os.getenv('IFLOW_API_KEY')
+            base_url = os.getenv('IFLOW_BASE_URL', 'https://apis.iflow.cn/v1')
+            model_name = os.getenv('IFLOW_MODEL_NAME', 'qwen3-coder-plus')
+            
+            if not api_key:
+                logger.warning("IFLOW_API_KEY not set, iFlow CLI may not authenticate properly")
+                return
+            
+            # Create .iflow directory in home directory
+            iflow_dir = Path.home() / '.iflow'
+            iflow_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create settings.json with authentication (mimics /auth command)
+            settings_data = {
+                "selectedAuthType": "iflow",
+                "apiKey": api_key,
+                "baseUrl": base_url,
+                "modelName": model_name,
+                "searchApiKey": api_key,
+                "theme": "Default"
+            }
+            
+            settings_file = iflow_dir / 'settings.json'
+            with open(settings_file, 'w') as f:
+                json.dump(settings_data, f, indent=2)
+            
+            # Set proper permissions
+            settings_file.chmod(0o600)
+            
+            logger.info(f"iFlow authentication configured at {settings_file}")
+            logger.info(f"Using model: {model_name}, base URL: {base_url}")
+            
+        except Exception as e:
+            logger.error(f"Failed to set up iFlow authentication: {e}")
+            logger.warning("iFlow CLI may not work properly without authentication")
 
     def _signal_handler(self, signum, frame):
         """Handle shutdown signals gracefully"""
@@ -156,8 +200,18 @@ class AgentRunner:
         try:
             await self._report_status('RUNNING', 'Cloning repository...', 10)
             
-            pr_url = self.task_data['pr_url']
-            repo_url = pr_url.replace('/pull/', '/').split('/pull/')[0] + '.git'
+            pr_url = self.task_data['pr_url'].rstrip('/')  # Remove trailing slash
+            # Extract repo URL from PR URL (e.g., https://github.com/owner/repo/pull/123 -> https://github.com/owner/repo.git)
+            if '/pull/' in pr_url:
+                repo_url = pr_url.split('/pull/')[0] + '.git'
+            else:
+                # Handle URLs like https://github.com/owner/repo/13072
+                # Extract owner/repo and construct proper URL
+                parts = pr_url.split('/')
+                if len(parts) >= 5:  # https://github.com/owner/repo/...
+                    repo_url = f"https://github.com/{parts[3]}/{parts[4]}.git"
+                else:
+                    raise ValueError(f"Invalid PR URL format: {pr_url}")
             
             clone_dir = self.workspace_dir / 'repo'
             clone_dir.mkdir(parents=True, exist_ok=True)
@@ -194,13 +248,13 @@ class AgentRunner:
             
             # Import and initialize agent based on type
             if self.agent_type == 'iflow':
-                from agents.iflow_agent import IFlowAgent
+                from app.agents.iflow_agent import IFlowAgent
                 self.agent = IFlowAgent()
             elif self.agent_type == 'claude':
-                from agents.claude_agent import ClaudeAgent
+                from app.agents.claude_agent import ClaudeAgent
                 self.agent = ClaudeAgent()
             elif self.agent_type == 'gemini':
-                from agents.gemini_agent import GeminiAgent
+                from app.agents.gemini_agent import GeminiAgent
                 self.agent = GeminiAgent()
             else:
                 raise ValueError(f"Unknown agent type: {self.agent_type}")
@@ -228,9 +282,15 @@ class AgentRunner:
                 'max_files': min(self.task_data.get('max_files', 5), 5),  # Cap at 5
                 'rubric': self.task_data.get('rubric', ['AR', 'TTL']),
                 'workspace_dir': str(self.workspace_dir / 'repo'),
+                'prompts': self.task_data.get('prompts', {}),  # CRITICAL: Pass the prompts!
                 'memory_limit_mb': self.max_memory_mb,
                 'timeout_seconds': self.max_execution_time - 300  # Reserve 5 minutes for cleanup
             }
+            
+            # Log the prompts being passed
+            logger.info(f"Passing prompts to agent: {list(eval_params.get('prompts', {}).keys())}")
+            for prompt_type, prompt_content in eval_params.get('prompts', {}).items():
+                logger.info(f"  {prompt_type}: {len(prompt_content)} chars")
             
             # Execute agent-specific evaluation
             results = await self.agent.execute_evaluation(eval_params)

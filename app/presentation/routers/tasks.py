@@ -64,6 +64,18 @@ class AgentRunResponse(BaseModel):
     retry_count: int = 0
 
 
+class StatusUpdateRequest(BaseModel):
+    """Request model for status updates from agent containers."""
+    task_id: str
+    agent_type: str
+    status: str
+    message: Optional[str] = None
+    progress: Optional[float] = None
+    timestamp: Optional[str] = None
+    memory_usage: Optional[float] = None
+    cpu_usage: Optional[float] = None
+
+
 class TaskListResponse(BaseModel):
     """Response model for task listing."""
     tasks: List[TaskResponse]
@@ -285,6 +297,37 @@ async def get_task_agent(
     return _agent_run_db_to_response(agent_run)
 
 
+@router.post("/{task_id}/status")
+async def update_task_status(
+    task_id: UUID,
+    status_data: StatusUpdateRequest,
+    db: DatabaseManager = Depends(get_db_manager),
+) -> Dict[str, str]:
+    """Update task status from agent container."""
+    
+    task_db = db.get_task(task_id)
+    if not task_db:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    try:
+        # Log the status update with all details
+        logger.info(
+            f"Task {task_id} status update from {status_data.agent_type}: "
+            f"{status_data.status} - {status_data.message} "
+            f"(progress: {status_data.progress}, mem: {status_data.memory_usage}MB, cpu: {status_data.cpu_usage}%)"
+        )
+        
+        # Optionally update task status if provided
+        if status_data.status in ['RUNNING', 'DONE', 'ERROR']:
+            db.update_task(task_id, {"status": status_data.status})
+        
+        return {"message": "Status updated successfully"}
+        
+    except Exception as e:
+        logger.error(f"Failed to update task status {task_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update status")
+
+
 @router.delete("/{task_id}")
 async def cancel_task(
     task_id: UUID,
@@ -382,3 +425,91 @@ def _agent_run_db_to_response(agent_run_db) -> AgentRunResponse:
         error_message=agent_run_db.error_message,
         retry_count=agent_run_db.retry_count,
     )
+
+
+@router.get("/{task_id}/comparison")
+async def get_task_comparison(
+    task_id: UUID,
+    db: DatabaseManager = Depends(get_db_manager),
+) -> Dict[str, Any]:
+    """Get side-by-side comparison of all agents for a task."""
+    
+    # Verify task exists
+    task_db = db.get_task(task_id)
+    if not task_db:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Get all agent runs
+    agent_runs = db.get_agent_runs_for_task(task_id)
+    
+    comparison = {
+        "task_id": str(task_id),
+        "pr_url": task_db.pr_url,
+        "repo": task_db.repo,
+        "pr_number": task_db.pr_number,
+        "status": task_db.status,
+        "agents": {},
+        "summary": {
+            "total_agents": len(agent_runs),
+            "completed": 0,
+            "failed": 0,
+            "running": 0
+        }
+    }
+    
+    for run in agent_runs:
+        agent_data = {
+            "agent": run.agent,
+            "status": run.status,
+            "stats": run.stats or {},
+            "milestones": run.milestones or {},
+            "error_message": run.error_message,
+            "started_at": run.started_at.isoformat() if run.started_at else None,
+            "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+        }
+        
+        # Extract key metrics from stats
+        stats = run.stats or {}
+        agent_data["metrics"] = {
+            "total_tokens": int(stats.get("total_tokens", stats.get("total_tokens_estimate", 0))),
+            "hit_limit": stats.get("hit_limit", "false") == "true",
+            "compression_detected": stats.get("compression_detected", "false") == "true",
+            "deep_dive_iterations": int(stats.get("deep_dive_iterations", 0)),
+            "detection_method": stats.get("detection_method", "unknown")
+        }
+        
+        comparison["agents"][run.agent] = agent_data
+        
+        # Update summary counts
+        if run.status == "done":
+            comparison["summary"]["completed"] += 1
+        elif run.status == "error":
+            comparison["summary"]["failed"] += 1
+        elif run.status in ["running", "queued"]:
+            comparison["summary"]["running"] += 1
+    
+    # Calculate winner (agent that handled memory best)
+    winner = None
+    best_score = -1
+    
+    for agent_name, agent_data in comparison["agents"].items():
+        if agent_data["status"] != "done":
+            continue
+        
+        metrics = agent_data["metrics"]
+        # Score based on: completed iterations, handled limit gracefully, compression worked
+        score = 0
+        score += metrics["deep_dive_iterations"] * 10  # More iterations = better
+        if metrics["compression_detected"]:
+            score += 50  # Bonus for compression
+        if not metrics["hit_limit"]:
+            score += 20  # Bonus for staying under limit
+        
+        if score > best_score:
+            best_score = score
+            winner = agent_name
+    
+    comparison["winner"] = winner
+    comparison["best_score"] = best_score
+    
+    return comparison

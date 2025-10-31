@@ -45,6 +45,17 @@ class Settings(BaseSettings):
     claude_bin: str = Field(default="claude", alias="CLAUDE_BIN")
     gemini_bin: str = Field(default="gemini", alias="GEMINI_BIN")
     
+    # iFlow Configuration
+    iflow_api_key: Optional[str] = Field(default=None, alias="IFLOW_API_KEY")
+    iflow_base_url: str = Field(default="https://apis.iflow.cn/v1", alias="IFLOW_BASE_URL")
+    iflow_model_name: str = Field(default="qwen3-coder-plus", alias="IFLOW_MODEL_NAME")
+    
+    # Claude Configuration
+    claude_model: str = Field(default="claude-3-5-sonnet-20241022", alias="CLAUDE_MODEL")
+    
+    # Gemini Configuration
+    gemini_model: str = Field(default="gemini-1.5-pro", alias="GEMINI_MODEL")
+    
     # API Keys (for LLM Judge)
     openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
     anthropic_api_key: Optional[str] = Field(default=None, alias="ANTHROPIC_API_KEY")
@@ -57,8 +68,11 @@ class Settings(BaseSettings):
     )
     
     # Task Processing
-    task_timeout_seconds: int = Field(default=3600, alias="TASK_TIMEOUT_SECONDS")  # 1 hour
-    agent_session_timeout: int = Field(default=1800, alias="AGENT_SESSION_TIMEOUT")  # 30 minutes
+    task_timeout_seconds: int = Field(default=7200, alias="TASK_TIMEOUT_SECONDS")  # 2 hours
+    agent_session_timeout: int = Field(default=3600, alias="AGENT_SESSION_TIMEOUT")  # 1 hour
+    
+    # Agent Token Limits (for fair comparison)
+    max_context_tokens: int = Field(default=200000, alias="MAX_CONTEXT_TOKENS")  # 200K tokens for all agents
     
     # Compression Detection
     compression_threshold_low: int = Field(default=30, alias="COMPRESSION_THRESHOLD_LOW")

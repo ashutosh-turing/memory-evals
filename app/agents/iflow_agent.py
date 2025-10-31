@@ -1,13 +1,15 @@
-"""iFlow AI agent adapter with compression detection."""
+"""iFlow AI agent adapter using Python SDK."""
 
-import re
-import time
+import asyncio
 import logging
 import subprocess
+import re
+import json
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
+from datetime import datetime
 
-import pexpect
+from iflow_sdk import IFlowClient, IFlowOptions, AssistantMessage, TaskFinishMessage, StopReason, ToolCallMessage, PlanMessage
 
 from app.domain.entities import AgentName
 from app.agents.base import (
@@ -19,69 +21,15 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-class IFlowCompressionDetector(CompressionDetector):
-    """iFlow-specific compression detection using footer analysis."""
-    
-    def __init__(self, threshold_low: int = 30, jump_threshold: int = 30):
-        self.threshold_low = threshold_low
-        self.jump_threshold = jump_threshold
-        self.footer_regex = re.compile(r"(\d+)% context left")
-        self.logger = logging.getLogger("agents.iflow.compression")
-    
-    def detect_compression(self, session_data: str) -> bool:
-        """Detect compression from iFlow session output."""
-        # Look for the last context percentage in the session data
-        matches = list(self.footer_regex.finditer(session_data))
-        if not matches:
-            return False
-        
-        # Get the last match (most recent context percentage)
-        last_match = matches[-1]
-        context_left = int(last_match.group(1))
-        
-        self.logger.debug(f"Current context left: {context_left}%")
-        
-        # Compression detected if context drops to or below threshold
-        return context_left <= self.threshold_low
-    
-    def should_enter_memory_only(self, session_data: str, previous_state: Dict[str, Any]) -> bool:
-        """Determine if should enter memory-only mode based on compression jump."""
-        matches = list(self.footer_regex.finditer(session_data))
-        if len(matches) < 2:
-            return self.detect_compression(session_data)
-        
-        # Get last two context percentages
-        current_context = int(matches[-1].group(1))
-        previous_context = int(matches[-2].group(1))
-        
-        self.logger.debug(f"Context transition: {previous_context}% -> {current_context}%")
-        
-        # Check for compression jump (context suddenly increases by 30%+ = compression occurred)
-        compression_jump = current_context - previous_context >= self.jump_threshold
-        
-        # Also check if context is critically low
-        critically_low = current_context <= self.threshold_low
-        
-        result = compression_jump or critically_low
-        if result:
-            self.logger.info(
-                f"Entering memory-only mode: jump={compression_jump} "
-                f"({previous_context}% -> {current_context}%), low={critically_low}"
-            )
-        
-        return result
-
-
 class IFlowAgent(AgentAdapter):
-    """iFlow AI agent adapter using pexpect for CLI interaction."""
+    """iFlow AI agent adapter using Python SDK for direct interaction."""
     
     def __init__(self):
         super().__init__(AgentName.IFLOW, settings.iflow_bin)
-        self.compression_detector = IFlowCompressionDetector(
-            threshold_low=settings.compression_threshold_low,
-            jump_threshold=settings.compression_jump_threshold
-        )
+        self.max_tokens = settings.max_context_tokens
         self.session_timeout = settings.agent_session_timeout
+        self.iflow_process = None
+        self.port = 8090
     
     def validate_installation(self) -> bool:
         """Validate that iFlow CLI is installed and working."""
@@ -90,7 +38,6 @@ class IFlowAgent(AgentAdapter):
             return False
         
         try:
-            # Test basic iFlow command
             result = subprocess.run(
                 [self.binary_path, "--version"],
                 capture_output=True,
@@ -127,184 +74,280 @@ class IFlowAgent(AgentAdapter):
             if result.returncode == 0:
                 version_info["version"] = result.stdout.strip()
             else:
-                version_info["version_error"] = result.stderr.strip()
+                version_info["version_error"] = result.stderr
                 
         except Exception as e:
             version_info["version_error"] = str(e)
         
         return version_info
     
+    def _start_iflow_process(self, repo_dir: Path) -> subprocess.Popen:
+        """Start iFlow CLI process with ACP mode and token limit."""
+        self.logger.info(f"Starting iFlow process in {repo_dir} with {self.max_tokens} token limit")
+        
+        # Start iFlow with experimental ACP mode and token limit
+        process = subprocess.Popen(
+            [
+                self.binary_path,
+                "--experimental-acp",
+                "--port", str(self.port),
+                "--max-tokens", str(self.max_tokens),
+                "--yolo"  # Auto-accept actions
+            ],
+            cwd=str(repo_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        self.iflow_process = process
+        self.logger.info(f"iFlow process started with PID {process.pid}")
+        return process
+    
+    def _get_context_stats(self) -> Optional[Dict[str, Any]]:
+        """Get context statistics by running /stats model command via subprocess."""
+        try:
+            # This is a workaround - we'd need to send this through the WebSocket
+            # For now, we'll track tokens from the SDK responses
+            return None
+        except Exception as e:
+            self.logger.warning(f"Failed to get context stats: {e}")
+            return None
+    
+    async def _send_and_collect(
+        self,
+        client: IFlowClient,
+        message: str,
+        log_file,
+        timeout: int = 300
+    ) -> Dict[str, Any]:
+        """Send a message and collect all responses until task finishes."""
+        self.logger.info(f"📤 Sending: {message[:100]}...")
+        log_file.write(f"\n{'='*80}\n")
+        log_file.write(f"[{datetime.now().isoformat()}] USER: {message}\n")
+        log_file.write(f"{'='*80}\n")
+        log_file.flush()
+        
+        await client.send_message(message)
+        
+        response_text = []
+        tool_calls = []
+        plans = []
+        stop_reason = None
+        
+        try:
+            async for msg in client.receive_messages():
+                if isinstance(msg, AssistantMessage):
+                    text = msg.chunk.text
+                    response_text.append(text)
+                    log_file.write(text)
+                    log_file.flush()
+                    
+                elif isinstance(msg, ToolCallMessage):
+                    tool_info = {
+                        "status": msg.status,
+                        "tool_name": msg.tool_name if hasattr(msg, 'tool_name') else None,
+                        "label": msg.label if hasattr(msg, 'label') else None
+                    }
+                    tool_calls.append(tool_info)
+                    log_file.write(f"\n[TOOL CALL: {tool_info}]\n")
+                    log_file.flush()
+                    
+                elif isinstance(msg, PlanMessage):
+                    plan_info = {
+                        "entries": [
+                            {
+                                "content": entry.content,
+                                "status": entry.status,
+                                "priority": entry.priority if hasattr(entry, 'priority') else None
+                            }
+                            for entry in msg.entries
+                        ]
+                    }
+                    plans.append(plan_info)
+                    log_file.write(f"\n[PLAN: {len(msg.entries)} entries]\n")
+                    log_file.flush()
+                    
+                elif isinstance(msg, TaskFinishMessage):
+                    stop_reason = msg.stop_reason
+                    log_file.write(f"\n[TASK FINISHED: {stop_reason}]\n")
+                    log_file.flush()
+                    break
+                    
+        except asyncio.TimeoutError:
+            self.logger.warning(f"Timeout waiting for response after {timeout}s")
+            stop_reason = "timeout"
+        
+        full_response = "".join(response_text)
+        
+        return {
+            "response": full_response,
+            "tool_calls": tool_calls,
+            "plans": plans,
+            "stop_reason": stop_reason,
+            "hit_token_limit": stop_reason == StopReason.MAX_TOKENS
+        }
+    
     def run_session(self, session: AgentSession) -> Dict[str, Any]:
-        """Run complete iFlow session with compression detection."""
+        """Run complete iFlow session using SDK."""
         self.setup_output_directory(session.output_dir)
         
         # Create transcript file
         transcript_path = session.output_dir / "transcript.txt"
-        export_path = session.output_dir / "export.json"
         
         try:
-            with open(transcript_path, "w", encoding="utf-8") as log_file:
-                result = self._run_interactive_session(
-                    session, log_file, export_path
-                )
+            # Run async session
+            result = asyncio.run(self._run_async_session(session, transcript_path))
             
             # Add file paths to result
             result["artifacts"]["transcript"] = str(transcript_path)
-            if export_path.exists():
-                result["artifacts"]["export"] = str(export_path)
             
             return result
             
         except Exception as e:
-            self.logger.error(f"iFlow session failed: {e}")
+            self.logger.error(f"iFlow session failed: {e}", exc_info=True)
             return self.handle_error(e, session)
+        finally:
+            # Cleanup iFlow process
+            if self.iflow_process and self.iflow_process.poll() is None:
+                self.logger.info("Terminating iFlow process")
+                self.iflow_process.terminate()
+                try:
+                    self.iflow_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.logger.warning("Force killing iFlow process")
+                    self.iflow_process.kill()
     
-    def _run_interactive_session(
+    async def _run_async_session(
         self,
         session: AgentSession,
-        log_file,
-        export_path: Path
+        transcript_path: Path
     ) -> Dict[str, Any]:
-        """Run the interactive iFlow session with step-by-step execution."""
+        """Run the async iFlow session using SDK."""
         
-        # Initialize session state
         milestones = []
         stats = {}
+        responses = []
+        total_tokens_estimate = 0
         compression_detected = False
-        context_history = []
         
         # Start iFlow process
-        self.logger.info(f"Starting iFlow session in {session.repo_dir}")
+        self._start_iflow_process(session.repo_dir)
         
-        child = pexpect.spawn(
-            self.binary_path,
-            cwd=str(session.repo_dir),
-            encoding="utf-8",
-            timeout=self.session_timeout
-        )
-        child.logfile = log_file
+        # Wait for iFlow to start
+        await asyncio.sleep(5)
+        milestones.append("iflow_started")
         
         try:
-            # Wait for initial prompt
-            child.expect("Type your message", timeout=120)
-            milestones.append("initialized")
-            
-            # Initialize iFlow
-            self.logger.info("Initializing iFlow session")
-            child.sendline("/init")
-            time.sleep(2)
-            milestones.append("init_command")
-            
-            # Send pre-compression prompt
-            self.logger.info("Sending pre-compression prompt")
-            child.sendline(session.prompts["pre"])
-            time.sleep(6)
-            milestones.append("pre_compression")
-            
-            # Deep-dive loop with compression detection
-            last_context_left = 100
-            for iteration in range(6):  # Max 6 iterations to prevent infinite loops
-                self.logger.info(f"Deep-dive iteration {iteration + 1}")
+            with open(transcript_path, "w", encoding="utf-8") as log_file:
+                # Connect via SDK
+                options = IFlowOptions(
+                    auto_start_process=False,
+                    url=f"ws://localhost:{self.port}/acp",
+                    timeout=float(self.session_timeout)
+                )
                 
-                # Get current stats
-                child.sendline("/stats")
-                time.sleep(2)
+                self.logger.info(f"Connecting to iFlow at {options.url}")
                 
-                # Parse context from output
-                output_buffer = child.before or ""
-                context_match = self.compression_detector.footer_regex.search(output_buffer)
-                
-                if context_match:
-                    current_context = int(context_match.group(1))
-                    context_history.append(current_context)
-                    stats[f"context_iteration_{iteration + 1}"] = str(current_context)
+                async with IFlowClient(options) as client:
+                    milestones.append("sdk_connected")
                     
-                    self.logger.info(f"Context left: {current_context}%")
+                    # Phase 1: Initialize repository with /init
+                    self.logger.info("=" * 80)
+                    self.logger.info("PHASE 1: Repository Initialization")
+                    self.logger.info("=" * 80)
                     
-                    # Check if we should exit deep-dive phase
-                    if current_context <= self.compression_detector.threshold_low:
-                        self.logger.info("Low context detected, exiting deep-dive")
-                        compression_detected = True
-                        break
+                    init_result = await self._send_and_collect(
+                        client, "/init", log_file, timeout=600
+                    )
+                    responses.append({"phase": "init", **init_result})
+                    milestones.append("repo_initialized")
                     
-                    # Check for compression jump (context increased significantly)
-                    if len(context_history) >= 2:
-                        jump = current_context - context_history[-2]
-                        if jump >= self.compression_detector.jump_threshold:
-                            self.logger.info(f"Compression jump detected: +{jump}%")
+                    # Estimate tokens (rough: 1 token ≈ 4 chars)
+                    total_tokens_estimate += len(init_result["response"]) // 4
+                    stats["init_tokens_estimate"] = total_tokens_estimate
+                    
+                    # Phase 2: Pre-compression prompt
+                    self.logger.info("=" * 80)
+                    self.logger.info("PHASE 2: Pre-Compression Analysis")
+                    self.logger.info("=" * 80)
+                    
+                    pre_result = await self._send_and_collect(
+                        client, session.prompts["pre"], log_file, timeout=300
+                    )
+                    responses.append({"phase": "pre_compression", **pre_result})
+                    milestones.append("pre_compression")
+                    
+                    total_tokens_estimate += len(pre_result["response"]) // 4
+                    stats["pre_compression_tokens_estimate"] = total_tokens_estimate
+                    
+                    # Phase 3: Deep-dive prompts (loop until token limit or compression)
+                    self.logger.info("=" * 80)
+                    self.logger.info("PHASE 3: Deep-Dive Analysis")
+                    self.logger.info("=" * 80)
+                    
+                    deep_dive_count = 0
+                    max_deep_dives = 10  # Safety limit
+                    
+                    while deep_dive_count < max_deep_dives:
+                        deep_dive_count += 1
+                        self.logger.info(f"Deep-dive iteration #{deep_dive_count}")
+                        
+                        deep_result = await self._send_and_collect(
+                            client, session.prompts["deep"], log_file, timeout=300
+                        )
+                        responses.append({"phase": f"deep_dive_{deep_dive_count}", **deep_result})
+                        
+                        total_tokens_estimate += len(deep_result["response"]) // 4
+                        stats[f"deep_dive_{deep_dive_count}_tokens"] = total_tokens_estimate
+                        
+                        # Check if we hit token limit
+                        if deep_result["hit_token_limit"]:
+                            self.logger.info("🔴 Hit token limit - iFlow will compress")
                             compression_detected = True
                             break
+                        
+                        # Check if approaching limit (90% of max)
+                        if total_tokens_estimate > self.max_tokens * 0.9:
+                            self.logger.info(f"⚠️  Approaching token limit: {total_tokens_estimate:,} / {self.max_tokens:,}")
                     
-                    last_context_left = current_context
-                else:
-                    self.logger.warning("Could not parse context percentage from /stats output")
-                
-                # Continue with deep-dive
-                child.sendline(session.prompts["deep"])
-                time.sleep(8)
-                
-                # Check stats again after deep-dive
-                child.sendline("/stats")
-                time.sleep(2)
-            
-            milestones.append("deep_dive_complete")
-            
-            # Enter memory-only mode
-            self.logger.info("Entering memory-only mode")
-            child.sendline(session.prompts["memory_only"])
-            time.sleep(2)
-            milestones.append("memory_only")
-            
-            # Run evaluator questions
-            self.logger.info("Running evaluator questions")
-            evaluator_lines = session.prompts["eval"].splitlines()
-            for line in evaluator_lines:
-                if line.strip():
-                    child.sendline(line.strip())
-                    time.sleep(2)
-            
-            milestones.append("evaluation_complete")
-            
-            # Export session data (if supported)
-            self.logger.info(f"Exporting session data to {export_path}")
-            child.sendline(f"/export --format json --path {export_path}")
-            time.sleep(4)
-            
-            if export_path.exists():
-                milestones.append("export_complete")
-            
-            # Exit iFlow
-            try:
-                child.sendline("/exit")
-                child.expect(pexpect.EOF, timeout=5)
-            except pexpect.TIMEOUT:
-                # Force terminate if /exit doesn't work
-                child.terminate()
-            
-            milestones.append("session_complete")
-            
-        except pexpect.TIMEOUT as e:
-            self.logger.error(f"iFlow session timeout: {e}")
-            raise AgentTimeoutError(self.name.value, f"Session timeout: {e}")
-        
-        except pexpect.EOF as e:
-            self.logger.info("iFlow session ended (EOF)")
+                    milestones.append("deep_dive_complete")
+                    stats["deep_dive_iterations"] = deep_dive_count
+                    
+                    # Phase 4: Memory-only evaluation
+                    self.logger.info("=" * 80)
+                    self.logger.info("PHASE 4: Memory-Only Evaluation")
+                    self.logger.info("=" * 80)
+                    
+                    memory_result = await self._send_and_collect(
+                        client, session.prompts["memory_only"], log_file, timeout=300
+                    )
+                    responses.append({"phase": "memory_only", **memory_result})
+                    milestones.append("memory_only")
+                    
+                    # Phase 5: Evaluator questions
+                    self.logger.info("=" * 80)
+                    self.logger.info("PHASE 5: Evaluator Questions")
+                    self.logger.info("=" * 80)
+                    
+                    eval_result = await self._send_and_collect(
+                        client, session.prompts["eval"], log_file, timeout=300
+                    )
+                    responses.append({"phase": "evaluation", **eval_result})
+                    milestones.append("evaluation_complete")
+                    
+                    milestones.append("session_complete")
         
         except Exception as e:
-            self.logger.error(f"iFlow session error: {e}")
+            self.logger.error(f"Session error: {e}", exc_info=True)
             raise AgentExecutionError(self.name.value, f"Session error: {e}")
-        
-        finally:
-            # Ensure child process is terminated
-            if child.isalive():
-                child.terminate(force=True)
         
         # Prepare final statistics
         stats.update({
             "compression_detected": str(compression_detected),
-            "final_context_left": str(context_history[-1] if context_history else "unknown"),
-            "context_history": ",".join(map(str, context_history)),
-            "total_iterations": str(len(context_history)),
+            "total_tokens_estimate": str(total_tokens_estimate),
+            "detection_method": "token_limit_based",
+            "max_tokens_configured": str(self.max_tokens),
         })
         
         return {
@@ -312,6 +355,7 @@ class IFlowAgent(AgentAdapter):
             "stats": stats,
             "compression_detected": compression_detected,
             "milestones": milestones,
+            "responses": responses,
         }
 
 
@@ -321,15 +365,15 @@ IFLOW_CAPABILITIES = AgentCapabilities(
     supports_stats=True,
     supports_compression_detection=True,
     supports_interactive_mode=True,
-    max_session_duration=1800,
+    max_session_duration=3600,
 )
 
 IFLOW_METADATA = AgentMetadata(
     name=AgentName.IFLOW,
     display_name="iFlow AI",
-    description="iFlow AI agent with advanced compression detection capabilities",
-    version="1.0.0",
+    description="iFlow AI agent with automatic memory compression using Python SDK",
+    version="2.0.0",
     capabilities=IFLOW_CAPABILITIES,
     binary_name="iflow",
-    installation_instructions="Install via: bash -c \"$(curl -fsSL https://cloud.iflow.cn/iflow-cli/install.sh)\"",
+    installation_instructions="Install via: npm install -g @iflow-ai/iflow-cli && pip install iflow-cli-sdk",
 )

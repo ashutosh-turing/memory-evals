@@ -207,15 +207,9 @@ class GPTPromptService:
 - Encourage saying "I don't see this in the code" rather than guessing
 - Emphasize fact-based analysis over speculation
 
-**Template variables to include in your prompt:**
-- {{{{ repo_name }}}} - Repository name
-- {{{{ pr_number }}}} - PR number
-- {{{{ file_count }}}} - Number of files
-- {{{{ file_list }}}} - List of changed files
-- {{{{ at_files }}}} - Complete file contents
-- {{{{ base_branch }}}} and {{{{ head_branch }}}} - Branch names
+**IMPORTANT:** Use the actual values provided above (repository: {context['repo_name']}, PR #{context['pr_number']}, etc.) directly in your prompt. DO NOT use template variables like {{{{ }}}}. Write the prompt as if you're speaking directly to the AI agent with all the real information filled in.
 
-Create an engaging, professional, human-like prompt that will generate high-quality analysis while preventing hallucination. Use markdown formatting, emojis where appropriate, and clear structure."""
+Create an engaging, professional, human-like prompt that will generate high-quality analysis while preventing hallucination. Use markdown formatting, emojis where appropriate, and clear structure. Include the file list and refer to the specific repository and PR number."""
 
         try:
             response = self.client.chat.completions.create(
@@ -233,14 +227,50 @@ Create an engaging, professional, human-like prompt that will generate high-qual
             
             generated_prompt = response.choices[0].message.content.strip()
             
-            self.logger.info(f"Generated {prompt_type} prompt: {len(generated_prompt)} characters")
+            # Replace template variables with actual values
+            filled_prompt = self._fill_template_variables(generated_prompt, context)
             
-            return generated_prompt
+            # Log if there are still unfilled templates
+            if '{{' in filled_prompt:
+                self.logger.warning(f"Unfilled templates detected in {prompt_type} prompt")
+                self.logger.warning(f"Sample: {filled_prompt[:300]}")
+            
+            self.logger.info(f"Generated {prompt_type} prompt: {len(filled_prompt)} characters")
+            
+            return filled_prompt
             
         except Exception as e:
             self.logger.error(f"GPT API call failed for {prompt_type}: {e}")
             # Fallback to a basic template if GPT fails
-            return self._get_fallback_prompt(prompt_type, context)
+            fallback = self._get_fallback_prompt(prompt_type, context)
+            return self._fill_template_variables(fallback, context)
+    
+    def _fill_template_variables(self, prompt: str, context: Dict) -> str:
+        """Replace template variables in the prompt with actual values."""
+        
+        # Define all possible template variables and their replacements
+        replacements = {
+            "{{ repo_name }}": context.get("repo_name", ""),
+            "{{repo_name}}": context.get("repo_name", ""),
+            "{{ pr_number }}": str(context.get("pr_number", "")),
+            "{{pr_number}}": str(context.get("pr_number", "")),
+            "{{ file_count }}": str(context.get("file_count", "")),
+            "{{file_count}}": str(context.get("file_count", "")),
+            "{{ file_list }}": context.get("file_list", ""),
+            "{{file_list}}": context.get("file_list", ""),
+            "{{ at_files }}": context.get("at_files", ""),
+            "{{at_files}}": context.get("at_files", ""),
+            "{{ base_branch }}": context.get("base_branch", ""),
+            "{{base_branch}}": context.get("base_branch", ""),
+            "{{ head_branch }}": context.get("head_branch", ""),
+            "{{head_branch}}": context.get("head_branch", ""),
+        }
+        
+        filled_prompt = prompt
+        for template_var, value in replacements.items():
+            filled_prompt = filled_prompt.replace(template_var, str(value))
+        
+        return filled_prompt
     
     def _build_at_files_content(self, pr_result: PRAnalysisResult, max_files: int) -> str:
         """Build the file contents section with EXTREME memory safety to prevent segfaults."""

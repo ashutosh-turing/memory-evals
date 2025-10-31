@@ -118,7 +118,19 @@ class SimpleWorker:
                 
                 # Step 1: Process GitHub PR
                 logger.info(f"Processing PR: {task_db.pr_url}")
+                asyncio.run(self.task_logger.log_task_event(
+                    task_id, 'PR_PROCESSING', f'Cloning and analyzing PR: {task_db.pr_url}'
+                ))
+                self.task_logger.log_progress_update('pr_clone', 20, 'Cloning repository')
+                
                 pr_result = pr_service.process_pr(task_db.pr_url, task_id)
+                
+                # Log PR clone completion
+                self.task_logger.log_pr_cloned(
+                    str(pr_result.repo_path),
+                    pr_result.changed_files
+                )
+                self.task_logger.log_progress_update('pr_clone', 40, f'Cloned {len(pr_result.changed_files)} files')
                 
                 # Update task with changed files
                 db.update_task(UUID(task_id), {
@@ -128,12 +140,37 @@ class SimpleWorker:
                 # Step 2: Generate prompts
                 max_files = min(getattr(task_db, 'max_files', 5), 5)
                 logger.info(f"Using max_files={max_files}")
+                asyncio.run(self.task_logger.log_task_event(
+                    task_id, 'PROMPT_GENERATION', f'Generating prompts for {max_files} files'
+                ))
+                self.task_logger.log_progress_update('prompt_generation', 50, 'Generating evaluation prompts')
                 
                 try:
                     prompts = prompt_service.generate_prompts(pr_result, max_files)
                     prompt_hash = prompt_service.get_prompt_hash(prompts)
+                    
+                    # Log each generated prompt
+                    for prompt_type, prompt_content in prompts.items():
+                        self.task_logger.log_prompt_generated(
+                            prompt_type,
+                            prompt_content,
+                            pr_result.changed_files[:max_files]
+                        )
+                        asyncio.run(self.task_logger.log_task_event(
+                            task_id, 'PROMPT_GENERATED', 
+                            f'Generated {prompt_type} prompt: {len(prompt_content)} chars'
+                        ))
+                    
+                    self.task_logger.log_progress_update('prompt_generation', 60, 'All prompts generated')
+                    
                 except Exception as prompt_error:
                     logger.error(f"Prompt generation failed: {prompt_error}")
+                    self.task_logger.log_error(
+                        'prompt_generation_failed',
+                        str(prompt_error),
+                        {'max_files': max_files},
+                        prompt_error
+                    )
                     prompts = self._create_fallback_prompts(pr_result)
                     prompt_hash = "fallback_prompts"
                 
@@ -144,10 +181,13 @@ class SimpleWorker:
                 asyncio.run(self.task_logger.log_task_event(
                     task_id, 'AGENTS_STARTING', f'Starting {len(task_db.agents)} agents'
                 ))
+                self.task_logger.log_progress_update('agent_run', 70, f'Starting {len(task_db.agents)} agent(s)')
                 
                 agent_results = self._process_agents_simple(
                     task_id, task_db, pr_result, prompts, db
                 )
+                
+                self.task_logger.log_progress_update('agent_run', 85, 'All agents completed')
                 
                 # Step 4: Judge results (if we have successful agent runs)
                 successful_agents = [
@@ -157,15 +197,34 @@ class SimpleWorker:
                 
                 if successful_agents:
                     logger.info("Starting judging phase")
+                    asyncio.run(self.task_logger.log_task_event(
+                        task_id, 'JUDGING_STARTED', f'Judging {len(successful_agents)} successful agent(s)'
+                    ))
+                    self.task_logger.log_progress_update('judging', 90, 'Evaluating agent results')
+                    
                     db.update_task(UUID(task_id), {"status": TaskStatus.JUDGING})
                     self._judge_results(task_id, successful_agents, db, judge_service)
+                    
+                    self.task_logger.log_progress_update('judging', 95, 'Judging complete')
                 else:
                     logger.warning("No successful agent runs to judge")
+                    asyncio.run(self.task_logger.log_task_event(
+                        task_id, 'JUDGING_SKIPPED', 'No successful agent runs to judge'
+                    ))
                 
                 # Step 5: Complete task
                 db.update_task(UUID(task_id), {"status": TaskStatus.DONE})
                 
                 execution_time = time.time() - start_time
+                
+                # Log final completion
+                self.task_logger.log_task_completed(
+                    'done',
+                    agent_results,
+                    execution_time
+                )
+                self.task_logger.log_progress_update('complete', 100, 'Task completed successfully')
+                
                 asyncio.run(self.task_logger.log_task_event(
                     task_id, 'TASK_COMPLETED', 
                     f'Task completed successfully in {execution_time:.1f}s'
@@ -246,9 +305,16 @@ class SimpleWorker:
                 agent_name = AgentName(agent_name_str)
                 logger.info(f"Processing agent: {agent_name.value}")
                 
+                # Log agent start
+                asyncio.run(self.task_logger.log_task_event(
+                    task_id, 'AGENT_STARTED', 
+                    f'Starting {agent_name.value} agent'
+                ))
+                
                 # Create agent-specific task data
                 agent_task_data = {
                     **task_data,
+                    "task_id": task_id,
                     "agent_name": agent_name.value
                 }
                 
@@ -259,10 +325,24 @@ class SimpleWorker:
                 
                 agent_results[agent_name.value] = result
                 
+                # Log agent completion
+                status = result.get("status", "unknown")
                 asyncio.run(self.task_logger.log_task_event(
                     task_id, 'AGENT_PROCESSED', 
-                    f'{agent_name.value} completed with status: {result.get("status", "unknown")}'
+                    f'{agent_name.value} completed with status: {status}'
                 ))
+                
+                if status == "success":
+                    asyncio.run(self.task_logger.log_task_event(
+                        task_id, 'AGENT_SUCCESS',
+                        f'{agent_name.value} evaluation completed successfully'
+                    ))
+                else:
+                    error_msg = result.get("error", "Unknown error")
+                    asyncio.run(self.task_logger.log_task_event(
+                        task_id, 'AGENT_FAILED',
+                        f'{agent_name.value} failed: {error_msg}'
+                    ))
                 
             except Exception as e:
                 logger.error(f"Failed to process agent {agent_name_str}: {e}")
@@ -305,8 +385,17 @@ class SimpleWorker:
                 '-e', f'AGENT_TYPE={agent_type}',
                 '-e', f'TASK_DATA_FILE=/agent/task_data.json',
                 '-e', 'ORCHESTRATOR_URL=http://host.docker.internal:8000',
-                f'{agent_type}-agent:latest'
             ]
+            
+            # Add iFlow-specific environment variables
+            if agent_type == 'iflow' and settings.iflow_api_key:
+                docker_cmd.extend([
+                    '-e', f'IFLOW_API_KEY={settings.iflow_api_key}',
+                    '-e', f'IFLOW_BASE_URL={settings.iflow_base_url}',
+                    '-e', f'IFLOW_MODEL_NAME={settings.iflow_model_name}',
+                ])
+            
+            docker_cmd.append(f'{agent_type}-agent:latest')
             
             logger.info(f"Running Docker command: {' '.join(docker_cmd)}")
             
@@ -320,7 +409,7 @@ class SimpleWorker:
                 docker_cmd,
                 capture_output=True,
                 text=True,
-                timeout=1800,  # 30 minutes
+                timeout=settings.task_timeout_seconds,
                 check=False
             )
             

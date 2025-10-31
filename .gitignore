@@ -229,3 +229,5 @@ exports/
 test_outputs/
 test_logs/
 storage/
+.cursor/
+!dockerfiles/
