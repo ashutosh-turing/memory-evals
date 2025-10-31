@@ -18,7 +18,8 @@ uv pip install -e . --verbose
 
 # 3. Setup configuration
 cp .env.example .env
-# Edit .env with your settings
+# Edit .env with your API keys and database settings
+# See ENVIRONMENT_SETUP.md for complete configuration options
 
 # 4. Start Redis (in separate terminal)
 redis-server

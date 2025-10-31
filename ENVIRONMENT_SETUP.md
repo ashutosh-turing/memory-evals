@@ -63,17 +63,45 @@ AGENT_SESSION_TIMEOUT=3600  # 1 hour - increased for full compression cycle
 MAX_CONTEXT_TOKENS=200000  # Token limit for all agents (fair comparison)
 ```
 
-### Other Configuration
+### Agent Model Configuration
+```bash
+CLAUDE_MODEL=claude-sonnet-4-5-20250929
+GEMINI_MODEL=gemini-2.5-pro
+```
+
+### Task Processing Configuration
 ```bash
 RUN_ROOT=storage
 MAX_FILES_PER_TASK=50
+TASK_TIMEOUT_SECONDS=7200
+AGENT_SESSION_TIMEOUT=3600
+MAX_CONTEXT_TOKENS=200000
+MAX_TURNS=100
+```
+
+### Compression Detection
+```bash
 COMPRESSION_THRESHOLD_LOW=30
 COMPRESSION_JUMP_THRESHOLD=30
-DEFAULT_JUDGE=heuristic
+```
+
+### Judge Configuration
+```bash
+DEFAULT_JUDGE=llm
 JUDGE_MODEL=gpt-4o
-USE_GPT_PROMPTS=True
+```
+
+### Prompt Generation Configuration
+```bash
+USE_GPT_PROMPTS=true
 PROMPT_MODEL=gpt-4o
 PROMPT_TEMPERATURE=1.0
+PROMPT_MAX_TOKENS=4000
+```
+
+### Security
+```bash
+ALLOWED_ORIGINS=["http://localhost:3000","http://localhost:8000","http://127.0.0.1:8000"]
 ```
 
 ## How Authentication Works

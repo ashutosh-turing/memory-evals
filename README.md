@@ -1,125 +1,271 @@
-<div align="center">
-        <a href="https://react-hook-form.com" title="React Hook Form - Simple React forms validation">
-            <img src="https://raw.githubusercontent.com/react-hook-form/react-hook-form/master/docs/logo.png" alt="React Hook Form Logo - React hook custom hook for form validation" />
-        </a>
-</div>
+# Memory-Break Orchestrator
 
-<div align="center">
+A comprehensive evaluation system for testing AI agent performance under memory compression scenarios. The orchestrator automatically tests multiple AI agents (Claude, Gemini, iFlow) against GitHub PRs and evaluates their ability to maintain understanding after memory compression events.
 
-[![npm downloads](https://img.shields.io/npm/dm/react-hook-form.svg?style=for-the-badge)](https://www.npmjs.com/package/react-hook-form)
-[![npm](https://img.shields.io/npm/dt/react-hook-form.svg?style=for-the-badge)](https://www.npmjs.com/package/react-hook-form)
-[![npm](https://img.shields.io/npm/l/react-hook-form?style=for-the-badge)](https://github.com/react-hook-form/react-hook-form/blob/master/LICENSE)
-[![Discord](https://img.shields.io/discord/754891658327359538.svg?style=for-the-badge&label=&logo=discord&logoColor=ffffff&color=7389D8&labelColor=6A7EC2)](https://discord.gg/yYv7GZ8)
+## Features
 
-</div>
+- **Multi-Agent Testing**: Simultaneously evaluate Claude, Gemini, and iFlow agents
+- **Memory Compression Detection**: Automatically detects when agents hit context limits
+- **Real-time Monitoring**: Live progress tracking and logging via web dashboard
+- **LLM-based Judging**: Uses GPT-4o for intelligent evaluation of agent performance
+- **Comprehensive Scoring**: Evaluates across 4 dimensions (AR, TTL, LRU, SF)
+- **Immediate Results**: Agents are judged as soon as they complete (no waiting for batch processing)
+- **Artifact Management**: Complete transcript and result archival
 
-<p align="center">
-  <a href="https://react-hook-form.com/get-started">Get started</a> | 
-  <a href="https://react-hook-form.com/docs">API</a> |
-  <a href="https://react-hook-form.com/form-builder">Form Builder</a> |
-  <a href="https://react-hook-form.com/faqs">FAQs</a> |
-  <a href="https://github.com/react-hook-form/react-hook-form/tree/master/examples">Examples</a>
-</p>
+## Architecture
 
-### Features
-
-- Built with performance, UX and DX in mind
-- Embraces native HTML form [validation](https://react-hook-form.com/get-started#Applyvalidation)
-- Out of the box integration with [UI libraries](https://codesandbox.io/s/react-hook-form-v7-controller-5h1q5)
-- [Small size](https://bundlephobia.com/result?p=react-hook-form@latest) and no [dependencies](./package.json)
-- Support [Yup](https://github.com/jquense/yup), [Zod](https://github.com/colinhacks/zod), [AJV](https://github.com/ajv-validator/ajv), [Superstruct](https://github.com/ianstormtaylor/superstruct), [Joi](https://github.com/hapijs/joi) and [others](https://github.com/react-hook-form/resolvers)
-
-### Install
-
-    npm install react-hook-form
-
-### Quickstart
-
-```jsx
-import { useForm } from 'react-hook-form';
-
-function App() {
-  const {
-    register,
-    handleSubmit,
-    formState: { errors },
-  } = useForm();
-
-  return (
-    <form onSubmit={handleSubmit((data) => console.log(data))}>
-      <input {...register('firstName')} />
-      <input {...register('lastName', { required: true })} />
-      {errors.lastName && <p>Last name is required.</p>}
-      <input {...register('age', { pattern: /\d+/ })} />
-      {errors.age && <p>Please enter number for age.</p>}
-      <input type="submit" />
-    </form>
-  );
-}
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│   Web Dashboard │    │   API Server    │    │   Worker Pool   │
+│   (Frontend)    │◄──►│   (FastAPI)     │◄──►│   (RQ/Redis)    │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+                                │                        │
+                                ▼                        ▼
+                       ┌─────────────────┐    ┌─────────────────┐
+                       │   PostgreSQL    │    │  Agent Runners  │
+                       │   (Database)    │    │ Claude/Gemini/  │
+                       └─────────────────┘    │     iFlow       │
+                                              └─────────────────┘
 ```
 
-### Sponsors
+## Quick Start
 
-We’re incredibly grateful to these kind and generous sponsors for their support!
+### Prerequisites
+- Python 3.11+ (avoid 3.13 due to asyncpg compatibility)
+- PostgreSQL database
+- Redis server
+- Agent CLIs: iFlow, Claude, Gemini
 
-<a target="_blank" href="https://www.follower24.de/"><img width="120" src="https://images.opencollective.com/follower24/00297f8/avatar/256.png?height=256" /></a>
-<a target="_blank" href='https://workleap.com/'><img width="120" src="https://images.opencollective.com/workleap/db82f38/logo/256.png?height=256" /></a>
-<a target="_blank" href="https://kinsta.com/"><img width="120" src="https://images.opencollective.com/kinsta/55912d7/logo/256.png?height=256" /></a>
-<a target="_blank" href='https://www.sent.dm'><img width="120" src="https://avatars.githubusercontent.com/u/153308555?s=200&v=4" /></a>
-<a target="_blank" href='https://www.sgkb.ch/'><img width="120" src="https://images.opencollective.com/st-galler-kantonalbank-ag/bfdd17f/logo/256.png?height=256" /></a>
-<a target="_blank" href='https://route4me.com/'><img width="120" src="https://images.opencollective.com/route4me/71fb6fa/avatar/256.png?height=256" /></a>
-<a target="_blank" href='https://niche.com'><img width="120" src="https://avatars.githubusercontent.com/u/8988784?s=200&v=4" /></a>
-<a target="_blank" href='https://toss.im'><img width="120" src="https://images.opencollective.com/toss/3ed69b3/logo/256.png" /></a>
-<a target="_blank" href='https://principal.com/about-us'><img width="120" src="https://images.opencollective.com/principal/431e690/logo/256.png?height=256" /></a>
-<a target="_blank" href="https://hygraph.com"><img width="120" src="https://avatars.githubusercontent.com/u/31031438" /></a>
-<a target="_blank" href="https://www.beekai.com/"><img width="120" src="https://www.beekai.com/marketing/logo/logo.svg" /></a>
-<a target="_blank" href="https://kanamekey.com"><img width="120" src="https://images.opencollective.com/kaname/d15fd98/logo/256.png" /></a>
+### Installation
 
-### Past Sponsors
+```bash
+# 1. Clone and setup environment
+git clone <repository>
+cd cli-eval-poc/tools
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-Thank you to our previous sponsors for your generous support!
+# 2. Install dependencies
+pip install -e .
 
-<a target="_blank" href='https://www.sanity.io/'><img width="24" height="24" src="https://images.opencollective.com/sanity_io/558f87f/logo/256.png?height=256" /></a>
-<a target="_blank" href='https://twicsy.com/'><img width="24" height="24" src="https://images.opencollective.com/buy-instagram-followers-twicsy/b4c5d7f/logo/256.png?height=256" /></a>
-<a href="https://www.leniolabs.com/" target="_blank"><img src="https://www.leniolabs.com/images/leniolabs-isologo-example.jpg" width="24" height="24" /></a>
-<a target="_blank" href="https://underbelly.is"><img width="24" src="https://images.opencollective.com/underbelly/989a4a6/logo/256.png" /></a>
-<a target="_blank" href="https://feathery.io"><img width="24" src="https://images.opencollective.com/feathery1/c29b0a1/logo/256.png" /></a>
-<a target="_blank" href="https://getform.io"><img width="24" src="https://images.opencollective.com/getformio2/3c978c8/avatar/256.png" /></a>
-<a href="https://marmelab.com/" target="_blank"><img src="https://images.opencollective.com/marmelab/d7fd82f/logo/256.png" width="24" height="24" /></a>
-<a target="_blank" href="https://formcarry.com/"><img width="24" src="https://images.opencollective.com/formcarry/a40a4ea/logo/256.png" /></a>
-<a target="_blank" href="https://fabform.io"><img width="24" src="https://images.opencollective.com/fabform/2834037/logo/256.png" /></a>
-<a target="_blank" href="https://www.thinkmill.com.au/"><img width="24" src="https://images.opencollective.com/thinkmill/28910ec/logo/256.png" /></a>
-<a target="_blank" href="https://kwork.studio/"><img width="24" src="https://images.opencollective.com/knowledge-work/f91b72d/logo/256.png" /></a>
-<a target="_blank" href="https://fiberplane.com/"><img width="24" src="https://avatars.githubusercontent.com/u/61152955?s=200&v=4" /></a>
-<a target="_blank" href="https://www.jetbrains.com/"><img width="24" src="https://resources.jetbrains.com/storage/products/company/brand/logos/jb_beam.png" /></a>
-<a target="_blank" href="https://www.mirakl.com/"><img width="24" src="https://images.opencollective.com/mirakl/0b191f0/logo/256.png" /></a>
-<a target="_blank" href='https://wantedlyinc.com'><img width="24" src="https://images.opencollective.com/wantedly/d94e44e/logo/256.png" /></a>
-<a target="_blank" href="https://www.casinoreviews.net/"><img width="24" src="https://images.opencollective.com/casinoreviews/f0877d1/logo/256.png" /></a>
+# 3. Configure environment
+cp .env.example .env
+# Edit .env with your API keys and database settings
 
-### Backers
+# 4. Setup database
+alembic upgrade head
 
-Thanks go to all our backers! [[Become a backer](https://opencollective.com/react-hook-form#backer)].
+# 5. Start services
+# Terminal 1: Redis
+redis-server
 
-<a href="https://opencollective.com/react-hook-form#backers">
-    <img src="https://opencollective.com/react-hook-form/backers.svg?width=820" />
-</a>
+# Terminal 2: API Server
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 
-### Contributors
+# Terminal 3: Worker
+python worker.py
 
-Thanks go to these wonderful people! [[Become a contributor](CONTRIBUTING.md)].
+# 6. Open dashboard
+open http://localhost:8000
+```
 
-<a href="https://github.com/react-hook-form/react-hook-form/graphs/contributors">
-  <img src="https://opencollective.com/react-hook-form/contributors.svg?width=820" />
-</a>
+## Configuration
 
-<br />
-<br />
+### Required Environment Variables
 
-<a href="https://ui.dev/bytes/?r=bill">
-  <img src="https://raw.githubusercontent.com/react-hook-form/react-hook-form/master/docs/ads-1.jpeg" />
-</a>
+#### Database & Redis
+```bash
+DATABASE_URL=postgresql://user:password@localhost:5432/memory_break_db
+REDIS_URL=redis://localhost:6379/0
+```
 
-<br />
-<br />
+#### API Keys
+```bash
+# For LLM Judge and Prompt Generation
+OPENAI_API_KEY=your_openai_api_key_here
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
 
-<p align="center">Documentation website supported and backed by <a href="https://vercel.com"><b>Vercel</b></a></p>
+# For iFlow Agent (Required)
+IFLOW_API_KEY=your_iflow_api_key_here
+```
+
+#### Agent Configuration
+```bash
+# Model Selection
+CLAUDE_MODEL=claude-sonnet-4-5-20250929
+GEMINI_MODEL=gemini-2.5-pro
+IFLOW_MODEL_NAME=qwen3-coder-plus
+
+# Judge Configuration
+DEFAULT_JUDGE=llm
+JUDGE_MODEL=gpt-4o
+
+# Prompt Generation
+PROMPT_MODEL=gpt-4o
+PROMPT_TEMPERATURE=1.0
+```
+
+### Optional Configuration
+
+#### Performance Tuning
+```bash
+# Task Processing
+TASK_TIMEOUT_SECONDS=7200        # 2 hours max per task
+AGENT_SESSION_TIMEOUT=3600       # 1 hour max per agent
+MAX_CONTEXT_TOKENS=200000        # Token limit for fair comparison
+MAX_TURNS=100                    # Maximum deep-dive iterations
+
+# Compression Detection
+COMPRESSION_THRESHOLD_LOW=30     # Threshold for detecting compression
+COMPRESSION_JUMP_THRESHOLD=30    # Jump threshold for compression events
+```
+
+## Usage
+
+### Web Dashboard
+
+1. **Navigate** to http://localhost:8000
+2. **Enter** a GitHub PR URL (e.g., `https://github.com/owner/repo/pull/123`)
+3. **Select** agents to test (Claude, Gemini, iFlow)
+4. **Configure** evaluation parameters
+5. **Start** the evaluation task
+6. **Monitor** real-time progress and logs
+7. **Download** complete results when finished
+
+### API Usage
+
+```python
+import requests
+
+# Create evaluation task
+response = requests.post("http://localhost:8000/api/v1/tasks", json={
+    "pr_url": "https://github.com/owner/repo/pull/123",
+    "agents": ["claude", "gemini", "iflow"],
+    "rubric": ["AR", "TTL", "LRU", "SF"],
+    "max_files": 10
+})
+
+task_id = response.json()["id"]
+
+# Start task
+requests.post(f"http://localhost:8000/api/v1/tasks/{task_id}/start")
+
+# Monitor progress
+status = requests.get(f"http://localhost:8000/api/v1/tasks/{task_id}")
+```
+
+## Evaluation Process
+
+### 1. PR Analysis
+- Clones GitHub repository
+- Analyzes changed files and diff
+- Generates context-aware prompts
+
+### 2. Agent Execution
+- **Pre-compression Phase**: Detailed analysis with full context
+- **Deep-dive Phase**: Iterative exploration until compression detected
+- **Memory-only Phase**: Evaluation using compressed memory only
+- **Evaluation Phase**: Structured Q&A assessment
+
+### 3. Immediate Judging
+- Each agent is judged as soon as it completes
+- Uses LLM judge (GPT-4o) for intelligent evaluation
+- Scores across 4 dimensions: AR, TTL, LRU, SF
+- Generates detailed rationale and scoring
+
+### 4. Results & Artifacts
+- Complete transcripts and logs
+- Performance metrics and token usage
+- Downloadable ZIP bundles
+- Real-time leaderboard updates
+
+## Scoring Dimensions
+
+- **AR (Accurate Retrieval)**: How well can the agent recall specific details?
+- **TTL (Test-Time Learning)**: How well can the agent adapt to new scenarios?
+- **LRU (Long-Range Understanding)**: How well does the agent understand broader context?
+- **SF (Selective Forgetting)**: How well can the agent update/modify understanding?
+
+Each dimension is scored 0.0-1.0, with an overall average determining pass/fail status.
+
+## Development
+
+### Project Structure
+```
+├── app/
+│   ├── agents/          # Agent adapters (Claude, Gemini, iFlow)
+│   ├── domain/          # Core entities and models
+│   ├── infrastructure/  # Database, queue, external services
+│   ├── presentation/    # API routes and middleware
+│   └── services/        # Business logic (judge, prompt, PR analysis)
+├── workers/             # Background task processors
+├── static/              # Web dashboard assets
+├── prompts/             # Evaluation prompt templates
+└── storage/             # Task artifacts and results
+```
+
+### Adding New Agents
+
+1. Create agent adapter in `app/agents/`
+2. Implement `AgentAdapter` interface
+3. Register in `app/agents/registry.py`
+4. Add configuration in `app/config.py`
+
+### Extending Evaluation
+
+1. Modify rubric dimensions in `app/domain/entities.py`
+2. Update judge prompts in `app/services/judge_service.py`
+3. Enhance evaluation logic in `workers/simple_worker.py`
+
+## Troubleshooting
+
+### Common Issues
+
+**Database Connection Errors**
+```bash
+# Check PostgreSQL is running
+pg_ctl status
+
+# Verify connection string
+psql "postgresql://user:password@localhost:5432/memory_break_db"
+```
+
+**Redis Connection Errors**
+```bash
+# Check Redis is running
+redis-cli ping
+
+# Should return: PONG
+```
+
+**Agent CLI Issues**
+```bash
+# Verify agent installations
+iflow --version
+claude --version
+gemini --version
+```
+
+**API Key Issues**
+- Ensure all required API keys are set in `.env`
+- Check key permissions and quotas
+- Verify model access (GPT-4o, Claude Sonnet, etc.)
+
+### Logs
+
+- **API Server**: Check console output or logs/
+- **Worker**: Check worker.log
+- **Task Logs**: Available via web dashboard or API
+- **Agent Transcripts**: Stored in storage/{task_id}/
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
+
+## License
+
+[License information here]
