@@ -10,6 +10,7 @@ import time
 import json
 import tempfile
 import subprocess
+import traceback
 from pathlib import Path
 from typing import Dict, List, Optional
 from uuid import UUID
@@ -27,6 +28,8 @@ from app.services.pr_service import PRService
 from app.services.prompt_service import get_prompt_service
 from app.services.judge_service import get_judge_service
 from app.services.task_logger import TaskLogger
+from app.agents.registry import get_agent_registry
+from app.agents.base import AgentSession
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +121,19 @@ class SimpleWorker:
                 
                 # Step 1: Process GitHub PR
                 logger.info(f"Processing PR: {task_db.pr_url}")
+                asyncio.run(self.task_logger.log_task_event(
+                    task_id, 'PR_PROCESSING', f'Cloning and analyzing PR: {task_db.pr_url}'
+                ))
+                self.task_logger.log_progress_update('pr_clone', 20, 'Cloning repository')
+                
                 pr_result = pr_service.process_pr(task_db.pr_url, task_id)
+                
+                # Log PR clone completion
+                self.task_logger.log_pr_cloned(
+                    str(pr_result.repo_path),
+                    pr_result.changed_files
+                )
+                self.task_logger.log_progress_update('pr_clone', 40, f'Cloned {len(pr_result.changed_files)} files')
                 
                 # Update task with changed files
                 db.update_task(UUID(task_id), {
@@ -128,12 +143,37 @@ class SimpleWorker:
                 # Step 2: Generate prompts
                 max_files = min(getattr(task_db, 'max_files', 5), 5)
                 logger.info(f"Using max_files={max_files}")
+                asyncio.run(self.task_logger.log_task_event(
+                    task_id, 'PROMPT_GENERATION', f'Generating prompts for {max_files} files'
+                ))
+                self.task_logger.log_progress_update('prompt_generation', 50, 'Generating evaluation prompts')
                 
                 try:
                     prompts = prompt_service.generate_prompts(pr_result, max_files)
                     prompt_hash = prompt_service.get_prompt_hash(prompts)
+                    
+                    # Log each generated prompt
+                    for prompt_type, prompt_content in prompts.items():
+                        self.task_logger.log_prompt_generated(
+                            prompt_type,
+                            prompt_content,
+                            pr_result.changed_files[:max_files]
+                        )
+                        asyncio.run(self.task_logger.log_task_event(
+                            task_id, 'PROMPT_GENERATED', 
+                            f'Generated {prompt_type} prompt: {len(prompt_content)} chars'
+                        ))
+                    
+                    self.task_logger.log_progress_update('prompt_generation', 60, 'All prompts generated')
+                    
                 except Exception as prompt_error:
                     logger.error(f"Prompt generation failed: {prompt_error}")
+                    self.task_logger.log_error(
+                        'prompt_generation_failed',
+                        str(prompt_error),
+                        {'max_files': max_files},
+                        prompt_error
+                    )
                     prompts = self._create_fallback_prompts(pr_result)
                     prompt_hash = "fallback_prompts"
                 
@@ -144,10 +184,13 @@ class SimpleWorker:
                 asyncio.run(self.task_logger.log_task_event(
                     task_id, 'AGENTS_STARTING', f'Starting {len(task_db.agents)} agents'
                 ))
+                self.task_logger.log_progress_update('agent_run', 70, f'Starting {len(task_db.agents)} agent(s)')
                 
                 agent_results = self._process_agents_simple(
                     task_id, task_db, pr_result, prompts, db
                 )
+                
+                self.task_logger.log_progress_update('agent_run', 85, 'All agents completed')
                 
                 # Step 4: Judge results (if we have successful agent runs)
                 successful_agents = [
@@ -157,15 +200,34 @@ class SimpleWorker:
                 
                 if successful_agents:
                     logger.info("Starting judging phase")
+                    asyncio.run(self.task_logger.log_task_event(
+                        task_id, 'JUDGING_STARTED', f'Judging {len(successful_agents)} successful agent(s)'
+                    ))
+                    self.task_logger.log_progress_update('judging', 90, 'Evaluating agent results')
+                    
                     db.update_task(UUID(task_id), {"status": TaskStatus.JUDGING})
                     self._judge_results(task_id, successful_agents, db, judge_service)
+                    
+                    self.task_logger.log_progress_update('judging', 95, 'Judging complete')
                 else:
                     logger.warning("No successful agent runs to judge")
+                    asyncio.run(self.task_logger.log_task_event(
+                        task_id, 'JUDGING_SKIPPED', 'No successful agent runs to judge'
+                    ))
                 
                 # Step 5: Complete task
                 db.update_task(UUID(task_id), {"status": TaskStatus.DONE})
                 
                 execution_time = time.time() - start_time
+                
+                # Log final completion
+                self.task_logger.log_task_completed(
+                    'done',
+                    agent_results,
+                    execution_time
+                )
+                self.task_logger.log_progress_update('complete', 100, 'Task completed successfully')
+                
                 asyncio.run(self.task_logger.log_task_event(
                     task_id, 'TASK_COMPLETED', 
                     f'Task completed successfully in {execution_time:.1f}s'
@@ -246,9 +308,16 @@ class SimpleWorker:
                 agent_name = AgentName(agent_name_str)
                 logger.info(f"Processing agent: {agent_name.value}")
                 
+                # Log agent start
+                asyncio.run(self.task_logger.log_task_event(
+                    task_id, 'AGENT_STARTED', 
+                    f'Starting {agent_name.value} agent'
+                ))
+                
                 # Create agent-specific task data
                 agent_task_data = {
                     **task_data,
+                    "task_id": task_id,
                     "agent_name": agent_name.value
                 }
                 
@@ -259,10 +328,24 @@ class SimpleWorker:
                 
                 agent_results[agent_name.value] = result
                 
+                # Log agent completion
+                status = result.get("status", "unknown")
                 asyncio.run(self.task_logger.log_task_event(
                     task_id, 'AGENT_PROCESSED', 
-                    f'{agent_name.value} completed with status: {result.get("status", "unknown")}'
+                    f'{agent_name.value} completed with status: {status}'
                 ))
+                
+                if status == "success":
+                    asyncio.run(self.task_logger.log_task_event(
+                        task_id, 'AGENT_SUCCESS',
+                        f'{agent_name.value} evaluation completed successfully'
+                    ))
+                else:
+                    error_msg = result.get("error", "Unknown error")
+                    asyncio.run(self.task_logger.log_task_event(
+                        task_id, 'AGENT_FAILED',
+                        f'{agent_name.value} failed: {error_msg}'
+                    ))
                 
             except Exception as e:
                 logger.error(f"Failed to process agent {agent_name_str}: {e}")
@@ -276,128 +359,68 @@ class SimpleWorker:
         agent_type: str, 
         task_data: Dict
     ) -> Dict[str, str]:
-        """Run a single agent container using subprocess (fork-safe)."""
+        """Run a single agent using SDK (no Docker)."""
         
         try:
+            start_time = time.time()
+            
+            # Get agent from registry
+            agent_registry = get_agent_registry()
+            agent_name = AgentName(agent_type)
+            agent = agent_registry.get_agent(agent_name)
+            
             # Create agent directory in storage
             agent_dir = Path(settings.run_root) / task_id / "agents" / agent_type
             agent_dir.mkdir(parents=True, exist_ok=True)
             
-            # Create log files for container output
-            container_stdout_file = agent_dir / "container_stdout.log"
-            container_stderr_file = agent_dir / "container_stderr.log"
+            # Create AgentSession
+            session = type('AgentSession', (), {
+                'task_id': UUID(task_id),
+                'agent_run_id': UUID(task_data.get('agent_run_id', task_id)),
+                'repo_dir': Path(task_data['repo_path']),
+                'output_dir': agent_dir,
+                'prompts': task_data.get('prompts', {}),
+                'timeout': settings.agent_session_timeout
+            })()
             
-            # Create temporary file for task data
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-                json.dump(task_data, f, indent=2, default=str)
-                task_data_file = f.name
+            logger.info(f"Running {agent_type} agent with SDK (no Docker)")
             
-            container_name = f'agent-{agent_type}-{task_id}-{int(time.time())}'
-            
-            # Build Docker command using subprocess (fork-safe)
-            docker_cmd = [
-                'docker', 'run',
-                '--rm',  # Auto-remove when stopped
-                '--name', container_name,
-                '--memory', '3g',
-                '--cpus', '2.0',
-                '-v', f'{task_data_file}:/agent/task_data.json:ro',
-                '-e', f'AGENT_TYPE={agent_type}',
-                '-e', f'TASK_DATA_FILE=/agent/task_data.json',
-                '-e', 'ORCHESTRATOR_URL=http://host.docker.internal:8000',
-                f'{agent_type}-agent:latest'
-            ]
-            
-            logger.info(f"Running Docker command: {' '.join(docker_cmd)}")
-            
-            # Track running container
-            self.running_containers[task_id] = container_name
-            
-            start_time = time.time()
-            
-            # Run container with timeout
-            result = subprocess.run(
-                docker_cmd,
-                capture_output=True,
-                text=True,
-                timeout=1800,  # 30 minutes
-                check=False
-            )
+            # Run the agent session directly
+            result = agent.run_session(session)
             
             execution_time = time.time() - start_time
             
-            # Remove from tracking
-            self.running_containers.pop(task_id, None)
-            
-            # Write container output to log files
-            try:
-                with open(container_stdout_file, 'w', encoding='utf-8') as f:
-                    f.write(result.stdout)
-                with open(container_stderr_file, 'w', encoding='utf-8') as f:
-                    f.write(result.stderr if result.stderr else "")
-                logger.info(f"Saved container logs to {agent_dir}")
-            except Exception as e:
-                logger.warning(f"Failed to write container logs: {e}")
-            
-            # Clean up task data file
-            try:
-                Path(task_data_file).unlink()
-            except Exception as e:
-                logger.warning(f"Failed to cleanup task data file: {e}")
-            
-            if result.returncode == 0:
+            if result.get("artifacts"):
                 logger.info(f"Agent {agent_type} completed successfully in {execution_time:.1f}s")
                 return {
                     "status": "success",
-                    "exit_code": result.returncode,
                     "execution_time": execution_time,
-                    "stdout": result.stdout[-1000:],  # Last 1KB
-                    "stderr": result.stderr[-1000:] if result.stderr else "",
+                    "artifacts": result.get("artifacts", {}),
+                    "stats": result.get("stats", {}),
+                    "milestones": result.get("milestones", []),
+                    "compression_detected": result.get("compression_detected", False),
                     "log_dir": str(agent_dir)
                 }
             else:
-                logger.error(f"Agent {agent_type} failed with exit code {result.returncode}")
-                logger.error(f"Container stderr: {result.stderr[:500]}")
+                logger.error(f"Agent {agent_type} failed: {result.get('error', 'Unknown error')}")
                 return {
                     "status": "failed",
-                    "exit_code": result.returncode,
-                    "error": f"Container exited with code {result.returncode}",
-                    "stdout": result.stdout[-1000:],
-                    "stderr": result.stderr[-1000:] if result.stderr else "",
+                    "error": result.get("error", "Agent execution failed"),
                     "log_dir": str(agent_dir)
                 }
                 
-        except subprocess.TimeoutExpired:
-            logger.error(f"Agent {agent_type} timed out")
-            # Try to stop the container
-            try:
-                subprocess.run(['docker', 'stop', container_name], timeout=30)
-            except Exception as e:
-                logger.warning(f"Failed to stop timed out container: {e}")
-            
-            return {
-                "status": "failed",
-                "error": "Container execution timeout"
-            }
-            
         except Exception as e:
-            logger.error(f"Failed to run {agent_type} container: {e}")
+            logger.error(f"Failed to run {agent_type} agent: {e}")
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             return {
                 "status": "failed",
                 "error": str(e)
             }
     
     def _cleanup_task_containers(self, task_id: str):
-        """Cleanup any running containers for the task."""
-        container_name = self.running_containers.get(task_id)
-        if container_name:
-            try:
-                subprocess.run(['docker', 'stop', container_name], timeout=30)
-                logger.info(f"Stopped container: {container_name}")
-            except Exception as e:
-                logger.warning(f"Failed to stop container {container_name}: {e}")
-            finally:
-                self.running_containers.pop(task_id, None)
+        """Cleanup method (no longer needed - kept for compatibility)."""
+        # No Docker containers to clean up anymore
+        self.running_containers.pop(task_id, None)
     
     def _judge_results(
         self, 

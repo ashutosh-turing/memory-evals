@@ -18,10 +18,16 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+# Dependencies
+def get_db_manager(session: Session = Depends(get_session)) -> DatabaseManager:
+    """Get database manager dependency."""
+    return DatabaseManager(session)
+
+
 @router.get("/{task_id}/stream")
 async def stream_task_logs(
     task_id: UUID,
-    db: DatabaseManager = Depends(lambda session=Depends(get_session): DatabaseManager(session)),
+    db: DatabaseManager = Depends(get_db_manager),
 ) -> StreamingResponse:
     """Stream live logs for a task using Server-Sent Events."""
     
@@ -139,7 +145,7 @@ async def stream_task_logs(
 async def stream_agent_logs(
     task_id: UUID,
     agent_name: str,
-    db: DatabaseManager = Depends(lambda session=Depends(get_session): DatabaseManager(session)),
+    db: DatabaseManager = Depends(get_db_manager),
 ) -> StreamingResponse:
     """Stream live logs for a specific agent."""
     
@@ -210,7 +216,7 @@ async def stream_agent_logs(
 @router.get("/{task_id}/artifacts/logs")
 async def get_task_log_files(
     task_id: UUID,
-    db: DatabaseManager = Depends(lambda session=Depends(get_session): DatabaseManager(session)),
+    db: DatabaseManager = Depends(get_db_manager),
 ):
     """Get available log files for a task."""
     
@@ -238,6 +244,26 @@ async def get_task_log_files(
         if agents_dir.exists():
             for agent_dir in agents_dir.iterdir():
                 if agent_dir.is_dir():
+                    # Container stdout
+                    container_stdout = agent_dir / "container_stdout.log"
+                    if container_stdout.exists():
+                        log_files.append({
+                            "name": f"{agent_dir.name}_container_stdout.log",
+                            "path": f"agents/{agent_dir.name}/container_stdout.log",
+                            "size": container_stdout.stat().st_size,
+                            "modified": container_stdout.stat().st_mtime
+                        })
+                    
+                    # Container stderr
+                    container_stderr = agent_dir / "container_stderr.log"
+                    if container_stderr.exists():
+                        log_files.append({
+                            "name": f"{agent_dir.name}_container_stderr.log",
+                            "path": f"agents/{agent_dir.name}/container_stderr.log",
+                            "size": container_stderr.stat().st_size,
+                            "modified": container_stderr.stat().st_mtime
+                        })
+                    
                     session_log = agent_dir / "session.log"
                     if session_log.exists():
                         log_files.append({
@@ -257,3 +283,94 @@ async def get_task_log_files(
                         })
     
     return {"task_id": str(task_id), "log_files": log_files}
+
+
+@router.get("/{task_id}/container/{agent_name}/stream")
+async def stream_container_logs(
+    task_id: UUID,
+    agent_name: str,
+    log_type: str = "stdout",  # stdout or stderr
+    db: DatabaseManager = Depends(get_db_manager),
+) -> StreamingResponse:
+    """Stream live container logs (stdout/stderr) for a specific agent."""
+    
+    # Verify task exists
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    async def container_log_generator() -> AsyncGenerator[str, None]:
+        """Generate Server-Sent Events for container logs."""
+        import time
+        import asyncio
+        
+        try:
+            yield f"data: {json.dumps({'type': 'connected', 'agent': agent_name, 'log_type': log_type, 'task_id': str(task_id)})}\n\n"
+            
+            # Get container log file path
+            log_filename = f"container_{log_type}.log"
+            container_log_path = Path(settings.run_root).expanduser() / str(task_id) / "agents" / agent_name / log_filename
+            
+            # Wait for log file to appear
+            max_wait_time = 60
+            wait_start = time.time()
+            
+            while not container_log_path.exists() and (time.time() - wait_start) < max_wait_time:
+                yield f"data: {json.dumps({'type': 'info', 'message': f'Waiting for container {log_type} log...'})}\n\n"
+                await asyncio.sleep(2)
+            
+            if not container_log_path.exists():
+                yield f"data: {json.dumps({'type': 'error', 'message': f'Container {log_type} log not found. Agent may not have started.'})}\n\n"
+                return
+            
+            # Stream log file content
+            last_position = 0
+            max_stream_time = 7200  # 2 hours
+            stream_start = time.time()
+            
+            with open(container_log_path, 'r', encoding='utf-8', errors='replace') as f:
+                # Send existing content
+                existing_content = f.read()
+                if existing_content.strip():
+                    for line in existing_content.split('\n'):
+                        if line.strip():
+                            yield f"data: {json.dumps({'type': 'container_log', 'agent': agent_name, 'log_type': log_type, 'message': line})}\n\n"
+                
+                last_position = f.tell()
+                
+                # Follow file for new content
+                while (time.time() - stream_start) < max_stream_time:
+                    # Check if task completed
+                    updated_task = db.get_task(task_id)
+                    if updated_task and updated_task.status in ['done', 'error']:
+                        yield f"data: {json.dumps({'type': 'completed', 'status': updated_task.status, 'message': f'Task completed: {updated_task.status}'})}\n\n"
+                        break
+                    
+                    f.seek(last_position)
+                    new_content = f.read()
+                    if new_content:
+                        for line in new_content.split('\n'):
+                            if line.strip():
+                                yield f"data: {json.dumps({'type': 'container_log', 'agent': agent_name, 'log_type': log_type, 'message': line})}\n\n"
+                        last_position = f.tell()
+                    
+                    # Heartbeat
+                    if int(time.time()) % 30 == 0:
+                        yield f"data: {json.dumps({'type': 'heartbeat', 'message': 'Connection alive'})}\n\n"
+                    
+                    await asyncio.sleep(1)
+                        
+        except Exception as e:
+            logger.error(f"Error streaming container logs for {agent_name}: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'message': f'Stream error: {str(e)}'})}\n\n"
+    
+    return StreamingResponse(
+        container_log_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Cache-Control",
+        }
+    )

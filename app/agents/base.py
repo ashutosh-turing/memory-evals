@@ -103,6 +103,51 @@ class AgentAdapter(ABC):
             "compression_detected": False,
             "milestones": ["error"],
         }
+    
+    async def execute_evaluation(self, eval_params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Wrapper method for container-based execution.
+        Converts simple eval_params to AgentSession and calls run_session().
+        
+        Args:
+            eval_params: Dictionary containing:
+                - pr_url: str
+                - workspace_dir: str (path to cloned repo)
+                - prompts: Dict[str, str] (precompression, deepdive, memory_only, evaluator_set)
+                - max_files: int (optional)
+                - rubric: List[str] (optional)
+                - timeout_seconds: int (optional)
+        
+        Returns:
+            Dict containing execution results
+        """
+        from uuid import uuid4
+        
+        # Map prompt keys from service format to agent format
+        prompts = eval_params.get('prompts', {})
+        mapped_prompts = {
+            'pre': prompts.get('precompression', ''),
+            'deep': prompts.get('deepdive', ''),
+            'memory_only': prompts.get('memory_only', ''),
+            'eval': prompts.get('evaluator_set', '')
+        }
+        
+        # Create a simple AgentSession-like object
+        class SimpleSession:
+            def __init__(self, params, prompts_mapped):
+                self.task_id = uuid4()
+                self.agent_run_id = uuid4()
+                self.repo_dir = Path(params['workspace_dir'])
+                self.output_dir = self.repo_dir.parent / 'output'
+                self.prompts = prompts_mapped
+                self.timeout = params.get('timeout_seconds', 1800)
+        
+        session = SimpleSession(eval_params, mapped_prompts)
+        
+        # Call the existing run_session method
+        result = self.run_session(session)
+        
+        return result
 
 
 class StandardCompressionDetector(CompressionDetector):
