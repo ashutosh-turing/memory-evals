@@ -5,7 +5,7 @@ import asyncio
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
-from anthropic import AsyncAnthropic
+from anthropic import Anthropic
 
 from app.domain.entities import AgentName
 from app.agents.base import (
@@ -23,9 +23,10 @@ class ClaudeAgent(AgentAdapter):
     
     def __init__(self):
         super().__init__(AgentName.CLAUDE, "claude")  # No binary needed
-        self.client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        # Don't instantiate the client here - create it in the async context
         self.model = settings.claude_model
         self.max_tokens = settings.max_context_tokens
+        self.max_turns = settings.max_turns
         self.session_timeout = settings.agent_session_timeout
     
     def validate_installation(self) -> bool:
@@ -47,8 +48,11 @@ class ClaudeAgent(AgentAdapter):
         }
     
     def _load_repo_files(self, repo_dir: Path, max_files: int = 50) -> str:
-        """Load repository files into a context string."""
+        """Load repository files into a context string with token limit."""
         self.logger.info(f"Loading repository files from {repo_dir}")
+        
+        # Limit initial context to ~50K tokens (leaving room for conversation)
+        MAX_CONTEXT_TOKENS = 50000
         
         # Common code file extensions
         code_extensions = {
@@ -59,6 +63,7 @@ class ClaudeAgent(AgentAdapter):
         
         files_content = []
         file_count = 0
+        total_tokens = 0
         
         try:
             for file_path in repo_dir.rglob('*'):
@@ -81,8 +86,17 @@ class ClaudeAgent(AgentAdapter):
                     relative_path = file_path.relative_to(repo_dir)
                     content = file_path.read_text(encoding='utf-8', errors='ignore')
                     
+                    # Estimate tokens (rough: 1 token ~= 4 characters)
+                    file_tokens = len(content) // 4
+                    
+                    # Stop if we would exceed token limit
+                    if total_tokens + file_tokens > MAX_CONTEXT_TOKENS:
+                        self.logger.info(f"Stopping at {file_count} files to stay within {MAX_CONTEXT_TOKENS} token limit")
+                        break
+                    
                     files_content.append(f"### File: {relative_path}\n```{file_path.suffix[1:]}\n{content}\n```\n")
                     file_count += 1
+                    total_tokens += file_tokens
                     
                 except Exception as e:
                     self.logger.warning(f"Could not read {file_path}: {e}")
@@ -92,7 +106,7 @@ class ClaudeAgent(AgentAdapter):
             self.logger.error(f"Error loading repository files: {e}")
             return f"Error loading repository: {e}"
         
-        self.logger.info(f"Loaded {file_count} files from repository")
+        self.logger.info(f"Loaded {file_count} files (~{total_tokens} tokens) from repository")
         
         if not files_content:
             return "No code files found in repository."
@@ -140,6 +154,9 @@ class ClaudeAgent(AgentAdapter):
         total_tokens = 0
         hit_limit = False
         
+        # Create synchronous client
+        client = Anthropic(api_key=settings.anthropic_api_key)
+        
         try:
             with open(transcript_path, "w", encoding="utf-8") as log_file:
                 # Phase 1: Load repository context
@@ -160,7 +177,7 @@ class ClaudeAgent(AgentAdapter):
                 session_logger.log_prompt_sent(init_prompt, "repo_initialization")
                 
                 # Initial context loading
-                response = await self.client.messages.create(
+                response = client.messages.create(
                     model=self.model,
                     max_tokens=4096,
                     messages=messages
@@ -185,10 +202,10 @@ class ClaudeAgent(AgentAdapter):
                 self.logger.info("PHASE 2: Pre-Compression Analysis")
                 self.logger.info("=" * 80)
                 
-                session_logger.log_prompt_sent(session.prompts["pre"], "pre_compression")
-                messages.append({"role": "user", "content": session.prompts["pre"]})
+                session_logger.log_prompt_sent(session.prompts["precompression"], "pre_compression")
+                messages.append({"role": "user", "content": session.prompts["precompression"]})
                 
-                response = await self.client.messages.create(
+                response = client.messages.create(
                     model=self.model,
                     max_tokens=4096,
                     messages=messages
@@ -198,7 +215,7 @@ class ClaudeAgent(AgentAdapter):
                 messages.append({"role": "assistant", "content": response.content[0].text})
                 responses.append({"phase": "pre_compression", "response": response.content[0].text})
                 
-                log_file.write(f"USER: {session.prompts['pre']}\n\n")
+                log_file.write(f"USER: {session.prompts['precompression']}\n\n")
                 log_file.write(f"ASSISTANT: {response.content[0].text}\n\n")
                 log_file.write(f"Tokens used: {total_tokens:,} / {self.max_tokens:,}\n")
                 log_file.write("=" * 80 + "\n\n")
@@ -215,17 +232,17 @@ class ClaudeAgent(AgentAdapter):
                 self.logger.info("=" * 80)
                 
                 deep_dive_count = 0
-                max_deep_dives = 10  # Safety limit
                 
-                while deep_dive_count < max_deep_dives and total_tokens < self.max_tokens * 0.9:
+                while deep_dive_count < self.max_turns and total_tokens < self.max_tokens * 0.9:
                     deep_dive_count += 1
                     self.logger.info(f"Deep-dive iteration #{deep_dive_count}")
                     self.logger.info(f"Current tokens: {total_tokens:,} / {self.max_tokens:,} ({total_tokens/self.max_tokens*100:.1f}%)")
+                    self.logger.info(f"Turn: {deep_dive_count} / {self.max_turns}")
                     
-                    messages.append({"role": "user", "content": session.prompts["deep"]})
+                    messages.append({"role": "user", "content": session.prompts["deepdive"]})
                     
                     try:
-                        response = await self.client.messages.create(
+                        response = client.messages.create(
                             model=self.model,
                             max_tokens=4096,
                             messages=messages
@@ -235,7 +252,7 @@ class ClaudeAgent(AgentAdapter):
                         messages.append({"role": "assistant", "content": response.content[0].text})
                         responses.append({"phase": f"deep_dive_{deep_dive_count}", "response": response.content[0].text})
                         
-                        log_file.write(f"USER (Deep-dive #{deep_dive_count}): {session.prompts['deep']}\n\n")
+                        log_file.write(f"USER (Deep-dive #{deep_dive_count}): {session.prompts['deepdive']}\n\n")
                         log_file.write(f"ASSISTANT: {response.content[0].text}\n\n")
                         log_file.write(f"Tokens used: {total_tokens:,} / {self.max_tokens:,}\n")
                         log_file.write("=" * 80 + "\n\n")
@@ -265,7 +282,7 @@ class ClaudeAgent(AgentAdapter):
                 messages.append({"role": "user", "content": session.prompts["memory_only"]})
                 
                 try:
-                    response = await self.client.messages.create(
+                    response = client.messages.create(
                         model=self.model,
                         max_tokens=4096,
                         messages=messages
@@ -294,10 +311,10 @@ class ClaudeAgent(AgentAdapter):
                 self.logger.info("PHASE 5: Evaluator Questions")
                 self.logger.info("=" * 80)
                 
-                messages.append({"role": "user", "content": session.prompts["eval"]})
+                messages.append({"role": "user", "content": session.prompts["evaluator_set"]})
                 
                 try:
-                    response = await self.client.messages.create(
+                    response = client.messages.create(
                         model=self.model,
                         max_tokens=4096,
                         messages=messages
@@ -307,7 +324,7 @@ class ClaudeAgent(AgentAdapter):
                     messages.append({"role": "assistant", "content": response.content[0].text})
                     responses.append({"phase": "evaluation", "response": response.content[0].text})
                     
-                    log_file.write(f"USER (Evaluation): {session.prompts['eval']}\n\n")
+                    log_file.write(f"USER (Evaluation): {session.prompts['evaluator_set']}\n\n")
                     log_file.write(f"ASSISTANT: {response.content[0].text}\n\n")
                     log_file.write(f"Tokens used: {total_tokens:,} / {self.max_tokens:,}\n")
                     log_file.write("=" * 80 + "\n\n")

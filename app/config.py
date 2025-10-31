@@ -1,18 +1,23 @@
 """Application configuration using Pydantic Settings."""
 
+from pathlib import Path
 from typing import List, Optional
 from pydantic import Field, PostgresDsn, RedisDsn
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Get the project root directory (where .env is located)
+PROJECT_ROOT = Path(__file__).parent.parent
 
 
 class Settings(BaseSettings):
     """Application settings with environment variable support."""
     
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(PROJECT_ROOT / ".env"),
         env_file_encoding="utf-8",
         case_sensitive=False,
-        extra="forbid"
+        extra="ignore",
+        env_ignore_empty=False
     )
     
     # Application
@@ -51,10 +56,10 @@ class Settings(BaseSettings):
     iflow_model_name: str = Field(default="qwen3-coder-plus", alias="IFLOW_MODEL_NAME")
     
     # Claude Configuration
-    claude_model: str = Field(default="claude-3-5-sonnet-20241022", alias="CLAUDE_MODEL")
+    claude_model: str = Field(default="claude-sonnet-4-5-20250929", alias="CLAUDE_MODEL")
     
     # Gemini Configuration
-    gemini_model: str = Field(default="gemini-1.5-pro", alias="GEMINI_MODEL")
+    gemini_model: str = Field(default="gemini-2.5-pro", alias="GEMINI_MODEL")
     
     # API Keys (for LLM Judge)
     openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
@@ -73,19 +78,20 @@ class Settings(BaseSettings):
     
     # Agent Token Limits (for fair comparison)
     max_context_tokens: int = Field(default=200000, alias="MAX_CONTEXT_TOKENS")  # 200K tokens for all agents
+    max_turns: int = Field(default=100, alias="MAX_TURNS")  # Maximum deep-dive iterations
     
     # Compression Detection
     compression_threshold_low: int = Field(default=30, alias="COMPRESSION_THRESHOLD_LOW")
     compression_jump_threshold: int = Field(default=30, alias="COMPRESSION_JUMP_THRESHOLD")
     
     # Judge Configuration
-    default_judge: str = Field(default="heuristic", alias="DEFAULT_JUDGE")  # heuristic | llm
-    judge_model: str = Field(default="gpt-4", alias="JUDGE_MODEL")
+    default_judge: str = Field(default="llm", alias="DEFAULT_JUDGE")  # heuristic | llm
+    judge_model: str = Field(default="gpt-5", alias="JUDGE_MODEL")
     
     # Prompt Generation Configuration
     use_gpt_prompts: bool = Field(default=True, alias="USE_GPT_PROMPTS")  # Use GPT for prompt generation
-    prompt_model: str = Field(default="gpt-4o", alias="PROMPT_MODEL")  # Best GPT model for prompts
-    prompt_temperature: float = Field(default=0.3, alias="PROMPT_TEMPERATURE")  # Low temp for consistency
+    prompt_model: str = Field(default="gpt-5", alias="PROMPT_MODEL")  # Best GPT model for prompts
+    prompt_temperature: float = Field(default=0.7, alias="PROMPT_TEMPERATURE")  # Higher temp for natural variation
     prompt_max_tokens: int = Field(default=4000, alias="PROMPT_MAX_TOKENS")  # Max tokens per prompt
     
     @property

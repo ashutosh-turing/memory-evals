@@ -53,9 +53,9 @@ class AgentRunResponse(BaseModel):
     task_id: str
     agent: str
     status: str
-    milestones: Dict[str, str]
-    artifacts: Dict[str, str]
-    stats: Dict[str, str]
+    milestones: Dict[str, Any]
+    artifacts: Dict[str, Any]
+    stats: Dict[str, Any]
     created_at: str
     updated_at: str
     started_at: Optional[str] = None
@@ -513,3 +513,56 @@ async def get_task_comparison(
     comparison["best_score"] = best_score
     
     return comparison
+
+
+@router.get("/api/v1/leaderboard/{task_id}")
+async def get_task_leaderboard(
+    task_id: str,
+    session: Session = Depends(get_session)
+) -> Dict[str, Any]:
+    """Get leaderboard for a specific task showing agent comparison."""
+    
+    db = DatabaseManager(session)
+    
+    # Get all agent runs for the task
+    agent_runs = db.get_agent_runs_for_task(UUID(task_id))
+    
+    if not agent_runs:
+        raise HTTPException(status_code=404, detail="Task not found or no agent runs available")
+    
+    leaderboard_data = []
+    
+    for run in agent_runs:
+        # Get scores for this agent run
+        scores = db.get_scores_for_agent_run(run.id)
+        
+        # Calculate execution time
+        execution_time = 0.0
+        if run.completed_at and run.started_at:
+            execution_time = (run.completed_at - run.started_at).total_seconds()
+        elif run.updated_at and run.created_at:
+            execution_time = (run.updated_at - run.created_at).total_seconds()
+        
+        leaderboard_entry = {
+            "agent": run.agent.value,
+            "status": run.status.value,
+            "overall_score": scores.overall_score if scores else 0.0,
+            "scores": {
+                "AR": scores.scores.get("AR", 0.0) if scores else 0.0,
+                "TTL": scores.scores.get("TTL", 0.0) if scores else 0.0,
+                "LRU": scores.scores.get("LRU", 0.0) if scores else 0.0,
+                "SF": scores.scores.get("SF", 0.0) if scores else 0.0,
+            },
+            "passed": scores.passed if scores else False,
+            "execution_time": execution_time,
+            "compression_detected": run.stats.get("compression_detected", False) if run.stats else False
+        }
+        leaderboard_data.append(leaderboard_entry)
+    
+    # Sort by overall score (descending)
+    leaderboard_data.sort(key=lambda x: x["overall_score"], reverse=True)
+    
+    return {
+        "task_id": task_id,
+        "leaderboard": leaderboard_data
+    }

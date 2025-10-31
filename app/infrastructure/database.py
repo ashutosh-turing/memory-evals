@@ -250,3 +250,9 @@ class DatabaseManager:
         tasks = list(self.session.exec(statement).all())
         
         return tasks, total
+    
+    def get_scores_for_agent_run(self, agent_run_id: UUID) -> Optional[ScoreDB]:
+        """Get scores for a specific agent run."""
+        from sqlmodel import select
+        statement = select(ScoreDB).where(ScoreDB.agent_run_id == agent_run_id)
+        return self.session.exec(statement).first()

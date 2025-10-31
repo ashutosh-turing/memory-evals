@@ -28,6 +28,7 @@ class IFlowAgent(AgentAdapter):
     def __init__(self):
         super().__init__(AgentName.IFLOW, settings.iflow_bin)
         self.max_tokens = settings.max_context_tokens
+        self.max_turns = settings.max_turns
         self.session_timeout = settings.agent_session_timeout
         self.iflow_process = None
         self.port = 8090
@@ -294,7 +295,7 @@ class IFlowAgent(AgentAdapter):
                     self.logger.info("=" * 80)
                     
                     pre_result = await self._send_and_collect(
-                        client, session.prompts["pre"], log_file, session_logger, timeout=300
+                        client, session.prompts.get("pre") or session.prompts.get("precompression", ""), log_file, session_logger, timeout=300
                     )
                     responses.append({"phase": "pre_compression", **pre_result})
                     milestones.append("pre_compression")
@@ -308,23 +309,38 @@ class IFlowAgent(AgentAdapter):
                     self.logger.info("=" * 80)
                     
                     deep_dive_count = 0
-                    max_deep_dives = 10  # Safety limit
                     
-                    while deep_dive_count < max_deep_dives:
+                    while deep_dive_count < self.max_turns:
                         deep_dive_count += 1
                         self.logger.info(f"Deep-dive iteration #{deep_dive_count}")
                         
                         deep_result = await self._send_and_collect(
-                            client, session.prompts["deep"], log_file, session_logger, timeout=300
+                            client, session.prompts.get("deep") or session.prompts.get("deepdive", ""), log_file, session_logger, timeout=300
                         )
                         responses.append({"phase": f"deep_dive_{deep_dive_count}", **deep_result})
                         
                         total_tokens_estimate += len(deep_result["response"]) // 4
                         stats[f"deep_dive_{deep_dive_count}_tokens"] = total_tokens_estimate
                         
-                        # Check if we hit token limit
-                        if deep_result["hit_token_limit"]:
-                            self.logger.info("🔴 Hit token limit - iFlow will compress")
+                        # Log token usage
+                        hit_limit = deep_result["hit_token_limit"]
+                        self.logger.info(f"📊 Token estimate: {total_tokens_estimate:,} / {self.max_tokens:,} ({total_tokens_estimate/self.max_tokens*100:.1f}%)")
+                        self.logger.info(f"📊 Stop reason: {deep_result.get('stop_reason', 'unknown')} | Hit token limit: {hit_limit}")
+                        self.logger.info(f"📊 Turn: {deep_dive_count} / {self.max_turns}")
+                        session_logger.log_context_stats(
+                            f"{total_tokens_estimate}/{self.max_tokens}",
+                            f"Tokens: {total_tokens_estimate:,} ({total_tokens_estimate/self.max_tokens*100:.1f}%)"
+                        )
+                        
+                        # Check if we hit token limit (reported by iFlow SDK)
+                        if hit_limit:
+                            self.logger.info("🔴 Token limit reached - iFlow will compress context on next interaction")
+                            compression_detected = True
+                            break
+                        
+                        # FALLBACK: Check if our estimate exceeds limit (even if iFlow doesn't report it)
+                        if total_tokens_estimate >= self.max_tokens:
+                            self.logger.info(f"🔴 Token estimate exceeded limit ({total_tokens_estimate:,} >= {self.max_tokens:,}) - proceeding to memory-only evaluation")
                             compression_detected = True
                             break
                         
@@ -352,7 +368,7 @@ class IFlowAgent(AgentAdapter):
                     self.logger.info("=" * 80)
                     
                     eval_result = await self._send_and_collect(
-                        client, session.prompts["eval"], log_file, session_logger, timeout=300
+                        client, session.prompts.get("eval") or session.prompts.get("evaluator_set", ""), log_file, session_logger, timeout=300
                     )
                     responses.append({"phase": "evaluation", **eval_result})
                     milestones.append("evaluation_complete")

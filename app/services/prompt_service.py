@@ -133,91 +133,82 @@ class GPTPromptService:
         # Define prompt generation instructions for each type
         generation_instructions = {
             "precompression": {
-                "role": "Create an engaging, human-like prompt for initial PR analysis",
+                "role": "Write a casual message asking someone to look at a PR",
                 "requirements": [
-                    "Make it conversational and friendly",
-                    "Include clear instructions to analyze the code changes",
-                    "Emphasize fact-based analysis only",
-                    "Include strong anti-hallucination guidelines",
-                    "Use emojis and engaging language",
-                    "Structure with clear sections and goals"
+                    "Write like you're messaging a coworker on Slack",
+                    "Keep sentences short and direct",
+                    "No emojis, no formal sections",
+                    "Just explain what you need them to check",
+                    "Be specific about the files but keep it natural",
+                    "Tell them not to make stuff up about code they don't see"
                 ],
-                "focus": "Initial comprehensive analysis of the PR changes"
+                "focus": "Quick, natural request to analyze the PR"
             },
             "deepdive": {
-                "role": "Create a technical deep-dive prompt for detailed code analysis",
+                "role": "Ask someone to dig deeper into the technical details",
                 "requirements": [
-                    "Focus on technical implementation details",
-                    "Structure with clear technical categories",
-                    "Encourage specific code examples and patterns",
-                    "Maintain engaging but professional tone",
-                    "Include architectural and performance considerations"
+                    "Casual tone like chatting with a teammate",
+                    "Ask them to look at specific technical stuff",
+                    "Short sentences, direct questions",
+                    "No fancy formatting or structure",
+                    "Just say what technical aspects to check",
+                    "Keep it conversational"
                 ],
-                "focus": "Detailed technical analysis of implementation"
+                "focus": "Getting them to look at implementation details"
             },
             "memory_only": {
-                "role": "Create a strict memory-only prompt for retention testing",
+                "role": "Tell someone to recall what they remember without looking back",
                 "requirements": [
-                    "Very clear instructions about memory-only mode",
-                    "Strong warnings about not referencing original content",
-                    "Encourage honesty about unclear memories",
-                    "Structure for comprehensive memory recall",
-                    "Include guidelines for honest limitations"
+                    "Be clear they can't look at the code again",
+                    "Keep it casual but firm about the rules",
+                    "Tell them it's okay to say they don't remember",
+                    "Short, direct instructions",
+                    "No formal structure",
+                    "Like asking a friend to recall something"
                 ],
-                "focus": "Testing retention and memory of previous analysis"
+                "focus": "Testing what they remember from before"
             },
             "evaluator_set": {
-                "role": "Create specific evaluation questions for memory-break assessment",
+                "role": "Ask specific questions to test their memory and understanding",
                 "requirements": [
-                    "12 specific questions covering AR, TTL, LRU, SF dimensions",
-                    "Clear instructions for each question type",
-                    "Emphasize specific, honest answers only",
-                    "Include response quality guidelines",
-                    "Structure by evaluation dimensions"
+                    "Write 12 straightforward questions",
+                    "Keep each question short and clear",
+                    "No fancy formatting",
+                    "Just ask what you want to know",
+                    "Tell them to be honest if they don't know",
+                    "Casual but specific"
                 ],
-                "focus": "Structured evaluation of memory and understanding"
+                "focus": "Direct questions about what they learned"
             }
         }
         
         instruction = generation_instructions.get(prompt_type, generation_instructions["precompression"])
         
         # Create GPT prompt for prompt generation
-        gpt_prompt = f"""You are an expert at creating engaging, human-like prompts for AI agents analyzing GitHub Pull Requests. You need to create a {prompt_type} prompt.
+        gpt_prompt = f"""Write a casual message asking someone to analyze this PR. Write like you're messaging a colleague on Slack.
 
-**Your Role:** {instruction['role']}
-
-**Context about this PR:**
-- Repository: {context['repo_name']}
-- PR Number: #{context['pr_number']}
-- Files Changed: {context['file_count']} files (showing first {context['max_files']} files)
-- Base Branch: {context['base_branch']}
-- Head Branch: {context['head_branch']}
-
-**Files in this PR:**
+PR: {context['repo_name']} #{context['pr_number']}
+Files changed: {context['file_count']}
 {context['file_list']}
 
-**Requirements for the prompt you create:**
+What you need to do: {instruction['role']}
+
+Keep it natural and conversational. Short sentences. No emojis. No fancy formatting. Just tell them what to look at and remind them to only talk about code they actually see.
+
+This is for {prompt_type} - {instruction['focus']}
+
+Requirements:
 {chr(10).join(f"- {req}" for req in instruction['requirements'])}
 
-**Focus:** {instruction['focus']}
-
-**CRITICAL ANTI-HALLUCINATION GUIDELINES:**
-- The prompt MUST emphasize analyzing only the actual code shown
-- Include strong warnings against inventing functions/classes not present
-- Encourage saying "I don't see this in the code" rather than guessing
-- Emphasize fact-based analysis over speculation
-
-**IMPORTANT:** Use the actual values provided above (repository: {context['repo_name']}, PR #{context['pr_number']}, etc.) directly in your prompt. DO NOT use template variables like {{{{ }}}}. Write the prompt as if you're speaking directly to the AI agent with all the real information filled in.
-
-Create an engaging, professional, human-like prompt that will generate high-quality analysis while preventing hallucination. Use markdown formatting, emojis where appropriate, and clear structure. Include the file list and refer to the specific repository and PR number."""
+Use the actual repo name and PR number above. Don't use template variables. Write it like you're talking directly to them."""
 
         try:
             response = self.client.chat.completions.create(
                 model=settings.prompt_model,
                 messages=[
                     {
-                        "role": "system", 
-                        "content": "You are an expert prompt engineer creating high-quality, engaging prompts for code analysis."
+                        "role": "system",
+                        "content": "You are a casual developer writing quick messages to a colleague. Write naturally like you're on Slack - short sentences, direct, no fluff. Skip emojis and formal structure. Sound human, not AI."
                     },
                     {"role": "user", "content": gpt_prompt}
                 ],

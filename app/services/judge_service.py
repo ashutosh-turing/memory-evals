@@ -216,8 +216,8 @@ class HeuristicJudge(Judge):
 class LLMJudge(Judge):
     """LLM-based judge using external language models."""
     
-    def __init__(self, model: str = "gpt-4", provider: str = "openai"):
-        self.model = model
+    def __init__(self, model: str = None, provider: str = "openai"):
+        self.model = model if model is not None else settings.judge_model
         self.provider = provider.lower()
         self.logger = logging.getLogger("judge.llm")
         

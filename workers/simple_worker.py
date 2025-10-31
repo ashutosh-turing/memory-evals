@@ -12,9 +12,9 @@ import tempfile
 import subprocess
 import traceback
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from uuid import UUID
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import queue
 
 from sqlmodel import Session
@@ -284,7 +284,7 @@ class SimpleWorker:
         prompts: Dict[str, str], 
         db: DatabaseManager
     ) -> Dict[str, Dict]:
-        """Process agents using simple subprocess calls to Docker CLI."""
+        """Process agents in parallel using ThreadPoolExecutor."""
         
         agent_results = {}
         
@@ -302,54 +302,73 @@ class SimpleWorker:
             }
         }
         
-        # Process each agent
-        for agent_name_str in task_db.agents:
-            try:
-                agent_name = AgentName(agent_name_str)
-                logger.info(f"Processing agent: {agent_name.value}")
-                
-                # Log agent start
-                asyncio.run(self.task_logger.log_task_event(
-                    task_id, 'AGENT_STARTED', 
-                    f'Starting {agent_name.value} agent'
-                ))
-                
-                # Create agent-specific task data
-                agent_task_data = {
-                    **task_data,
-                    "task_id": task_id,
-                    "agent_name": agent_name.value
-                }
-                
-                # Process agent using subprocess (fork-safe)
-                result = self._run_agent_container(
-                    task_id, agent_name.value.lower(), agent_task_data
-                )
-                
-                agent_results[agent_name.value] = result
-                
-                # Log agent completion
-                status = result.get("status", "unknown")
-                asyncio.run(self.task_logger.log_task_event(
-                    task_id, 'AGENT_PROCESSED', 
-                    f'{agent_name.value} completed with status: {status}'
-                ))
-                
-                if status == "success":
+        # Process agents in parallel
+        futures = {}
+        
+        with ThreadPoolExecutor(max_workers=len(task_db.agents)) as executor:
+            # Submit all agents for parallel execution
+            for agent_name_str in task_db.agents:
+                try:
+                    agent_name = AgentName(agent_name_str)
+                    logger.info(f"Submitting agent for parallel execution: {agent_name.value}")
+                    
+                    # Log agent start
                     asyncio.run(self.task_logger.log_task_event(
-                        task_id, 'AGENT_SUCCESS',
-                        f'{agent_name.value} evaluation completed successfully'
+                        task_id, 'AGENT_STARTED', 
+                        f'Starting {agent_name.value} agent'
                     ))
-                else:
-                    error_msg = result.get("error", "Unknown error")
+                    
+                    # Create agent-specific task data
+                    agent_task_data = {
+                        **task_data,
+                        "task_id": task_id,
+                        "agent_name": agent_name.value
+                    }
+                    
+                    # Submit agent to run in parallel
+                    future = executor.submit(
+                        self._run_agent_container,
+                        task_id, 
+                        agent_name.value.lower(), 
+                        agent_task_data
+                    )
+                    futures[future] = agent_name.value
+                    
+                except Exception as e:
+                    logger.error(f"Failed to submit agent {agent_name_str}: {e}")
+                    agent_results[agent_name_str] = {"status": "failed", "error": str(e)}
+            
+            # Wait for all agents to complete and collect results
+            logger.info(f"Waiting for {len(futures)} agents to complete in parallel...")
+            
+            for future in as_completed(futures):
+                agent_name = futures[future]
+                try:
+                    result = future.result()
+                    agent_results[agent_name] = result
+                    
+                    # Log agent completion
+                    status = result.get("status", "unknown")
                     asyncio.run(self.task_logger.log_task_event(
-                        task_id, 'AGENT_FAILED',
-                        f'{agent_name.value} failed: {error_msg}'
+                        task_id, 'AGENT_PROCESSED', 
+                        f'{agent_name} completed with status: {status}'
                     ))
-                
-            except Exception as e:
-                logger.error(f"Failed to process agent {agent_name_str}: {e}")
-                agent_results[agent_name_str] = {"status": "failed", "error": str(e)}
+                    
+                    if status == "success":
+                        asyncio.run(self.task_logger.log_task_event(
+                            task_id, 'AGENT_SUCCESS',
+                            f'{agent_name} evaluation completed successfully'
+                        ))
+                    else:
+                        error_msg = result.get("error", "Unknown error")
+                        asyncio.run(self.task_logger.log_task_event(
+                            task_id, 'AGENT_FAILED',
+                            f'{agent_name} failed: {error_msg}'
+                        ))
+                        
+                except Exception as e:
+                    logger.error(f"Failed to process agent {agent_name}: {e}")
+                    agent_results[agent_name] = {"status": "failed", "error": str(e)}
         
         return agent_results
     
@@ -369,6 +388,16 @@ class SimpleWorker:
             agent_name = AgentName(agent_type)
             agent = agent_registry.get_agent(agent_name)
             
+            # Update agent run status to RUNNING in database
+            with Session(engine) as db_session:
+                db = DatabaseManager(db_session)
+                agent_runs = db.get_agent_runs_for_task(UUID(task_id))
+                # Handle both string and enum types for agent
+                agent_run = next((r for r in agent_runs if (r.agent.value if hasattr(r.agent, 'value') else r.agent) == agent_type), None)
+                if agent_run:
+                    db.update_agent_run(agent_run.id, {"status": AgentRunStatus.RUNNING})
+                    logger.info(f"Updated {agent_type} agent status to RUNNING")
+            
             # Create agent directory in storage
             agent_dir = Path(settings.run_root) / task_id / "agents" / agent_type
             agent_dir.mkdir(parents=True, exist_ok=True)
@@ -377,7 +406,7 @@ class SimpleWorker:
             session = type('AgentSession', (), {
                 'task_id': UUID(task_id),
                 'agent_run_id': UUID(task_data.get('agent_run_id', task_id)),
-                'repo_dir': Path(task_data['repo_path']),
+                'repo_dir': Path(task_data['pr_result']['repo_path']),
                 'output_dir': agent_dir,
                 'prompts': task_data.get('prompts', {}),
                 'timeout': settings.agent_session_timeout
@@ -392,6 +421,21 @@ class SimpleWorker:
             
             if result.get("artifacts"):
                 logger.info(f"Agent {agent_type} completed successfully in {execution_time:.1f}s")
+                
+                # Update agent run status to DONE in database
+                with Session(engine) as db_session:
+                    db = DatabaseManager(db_session)
+                    agent_runs = db.get_agent_runs_for_task(UUID(task_id))
+                    agent_run = next((r for r in agent_runs if (r.agent.value if hasattr(r.agent, 'value') else r.agent) == agent_type), None)
+                    if agent_run:
+                        db.update_agent_run(agent_run.id, {
+                            "status": AgentRunStatus.DONE,
+                            "artifacts": result.get("artifacts", {}),
+                            "stats": result.get("stats", {}),
+                            "milestones": {f"milestone_{i}": m for i, m in enumerate(result.get("milestones", []))}
+                        })
+                        logger.info(f"Updated {agent_type} agent status to DONE")
+                
                 return {
                     "status": "success",
                     "execution_time": execution_time,
@@ -403,6 +447,19 @@ class SimpleWorker:
                 }
             else:
                 logger.error(f"Agent {agent_type} failed: {result.get('error', 'Unknown error')}")
+                
+                # Update agent run status to ERROR in database
+                with Session(engine) as db_session:
+                    db = DatabaseManager(db_session)
+                    agent_runs = db.get_agent_runs_for_task(UUID(task_id))
+                    agent_run = next((r for r in agent_runs if (r.agent.value if hasattr(r.agent, 'value') else r.agent) == agent_type), None)
+                    if agent_run:
+                        db.update_agent_run(agent_run.id, {
+                            "status": AgentRunStatus.ERROR,
+                            "error_message": result.get("error", "Agent execution failed")
+                        })
+                        logger.info(f"Updated {agent_type} agent status to ERROR")
+                
                 return {
                     "status": "failed",
                     "error": result.get("error", "Agent execution failed"),
@@ -412,6 +469,21 @@ class SimpleWorker:
         except Exception as e:
             logger.error(f"Failed to run {agent_type} agent: {e}")
             logger.error(f"Full traceback: {traceback.format_exc()}")
+            
+            # Update agent run status to ERROR in database
+            try:
+                with Session(engine) as db_session:
+                    db = DatabaseManager(db_session)
+                    agent_runs = db.get_agent_runs_for_task(UUID(task_id))
+                    agent_run = next((r for r in agent_runs if (r.agent.value if hasattr(r.agent, 'value') else r.agent) == agent_type), None)
+                    if agent_run:
+                        db.update_agent_run(agent_run.id, {
+                            "status": AgentRunStatus.ERROR,
+                            "error_message": str(e)
+                        })
+            except Exception as db_error:
+                logger.error(f"Failed to update agent status in database: {db_error}")
+            
             return {
                 "status": "failed",
                 "error": str(e)
@@ -446,16 +518,16 @@ class SimpleWorker:
                 
                 # Get agent runs for task
                 agent_runs = db.get_agent_runs_for_task(UUID(task_id))
-                agent_run = next((run for run in agent_runs if run.agent == agent_name), None)
+                agent_run = next((run for run in agent_runs if (run.agent.value if hasattr(run.agent, 'value') else run.agent) == agent_name), None)
                 
                 if not agent_run:
                     logger.warning(f"Agent run not found for {agent_name}")
                     continue
                 
-                # Use placeholder scoring for now
-                scores_dict = {dim.value: 0.8 for dim in rubric}
-                overall_score = 0.8
-                passed = True
+                # Extract evaluation data from agent run
+                scores_dict, overall_score, passed, rationale = self._evaluate_agent_run(
+                    agent_run, rubric
+                )
                 
                 # Store score in database
                 score_data = {
@@ -465,9 +537,9 @@ class SimpleWorker:
                     "scores": scores_dict,
                     "overall_score": overall_score,
                     "passed": passed,
-                    "judge_type": "simple_placeholder",
+                    "judge_type": "heuristic",
                     "judge_model": None,
-                    "rationale": f"Simple execution completed successfully for {agent_name}"
+                    "rationale": rationale
                 }
                 
                 db.create_score(score_data)
@@ -488,6 +560,80 @@ class SimpleWorker:
             "memory_only": "Based on memory only, recall the PR analysis",
             "evaluator_set": "Answer questions about the PR from memory"
         }
+    
+    def _evaluate_agent_run(self, agent_run, rubric: List[RubricDimension]) -> Tuple[Dict[str, float], float, bool, str]:
+        """
+        Evaluate an agent run using heuristic or LLM judge.
+        
+        Returns:
+            Tuple of (scores_dict, overall_score, passed, rationale)
+        """
+        from app.services.judge_service import JudgeService
+        
+        # For now, use a simplified heuristic evaluation based on agent stats
+        # In a full implementation, we would extract Q&A from transcripts
+        
+        stats = agent_run.stats or {}
+        milestones = agent_run.milestones or {}
+        
+        # Calculate scores based on agent performance
+        scores = {}
+        
+        for dim in rubric:
+            if dim == RubricDimension.AR:  # Accuracy & Relevance
+                # Score based on completion and error-free execution
+                score = 0.8 if agent_run.status == AgentRunStatus.DONE else 0.3
+                if stats.get("compression_detected"):
+                    score += 0.1  # Bonus for handling compression
+                scores[dim.value] = min(1.0, score)
+                
+            elif dim == RubricDimension.TTL:  # Token-to-Learning efficiency
+                # Score based on token usage efficiency
+                total_tokens = stats.get("total_tokens_estimate", 0)
+                deep_dive_iterations = stats.get("deep_dive_iterations", 0)
+                if deep_dive_iterations > 0:
+                    # More iterations with reasonable token usage = better
+                    score = min(1.0, (deep_dive_iterations / 10.0) * 0.8)
+                else:
+                    score = 0.5
+                scores[dim.value] = score
+                
+            elif dim == RubricDimension.LRU:  # Long-term Retention & Understanding
+                # Score based on memory-only evaluation completion
+                has_memory_eval = "memory_only" in [m for m in milestones.values()] if isinstance(milestones, dict) else "memory_only" in milestones
+                score = 0.9 if has_memory_eval else 0.5
+                scores[dim.value] = score
+                
+            elif dim == RubricDimension.SF:  # Scalability & Future-proofing
+                # Score based on handling large context and compression
+                compression_detected = stats.get("compression_detected", False)
+                max_tokens = stats.get("max_tokens_configured", 200000)
+                total_tokens = stats.get("total_tokens_estimate", 0)
+                
+                if compression_detected:
+                    score = 0.9  # Successfully handled compression
+                elif total_tokens > max_tokens * 0.7:
+                    score = 0.7  # Used significant portion of context
+                else:
+                    score = 0.6
+                scores[dim.value] = score
+        
+        # Calculate overall score as average
+        overall_score = sum(scores.values()) / len(scores) if scores else 0.0
+        passed = overall_score >= 0.6
+        
+        # Generate rationale
+        rationale = f"Agent completed with {agent_run.status.value} status. "
+        if stats.get("compression_detected"):
+            rationale += "Successfully handled context compression. "
+        if stats.get("deep_dive_iterations"):
+            rationale += f"Completed {stats['deep_dive_iterations']} deep-dive iterations. "
+        rationale += f"Overall score: {overall_score:.2f}"
+        
+        agent_name = agent_run.agent.value if hasattr(agent_run.agent, 'value') else agent_run.agent
+        logger.info(f"Evaluated {agent_name}: overall={overall_score:.2f}, scores={scores}")
+        
+        return scores, overall_score, passed, rationale
 
 
 # Global simple task queue instance
