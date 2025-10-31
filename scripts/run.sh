@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Memory-Break Orchestrator Production Startup Script
-# Starts all services needed for containerized worker architecture
+# Starts all services needed for simple worker architecture
 
 set -e  # Exit on any error
 
@@ -19,7 +19,7 @@ PYTHON_CMD="python"
 
 echo -e "${BLUE}========================================${NC}"
 echo -e "${BLUE}🚀 Memory-Break Orchestrator Startup${NC}"
-echo -e "${BLUE}Container-Managed Worker Architecture${NC}"
+echo -e "${BLUE}Simple Worker Architecture${NC}"
 echo -e "${BLUE}========================================${NC}"
 
 # Function to print colored status
@@ -87,12 +87,24 @@ check_prerequisites() {
     fi
     print_status "Python available: $(python --version)"
     
-    # Check Docker
-    if ! command -v docker &> /dev/null; then
-        print_error "Docker not found"
-        exit 1
+    # Check Agent CLIs
+    if command -v iflow &> /dev/null; then
+        print_status "iFlow CLI available"
+    else
+        print_warning "iFlow CLI not found - iFlow agent will not work"
     fi
-    print_status "Docker available: $(docker --version | cut -d' ' -f3)"
+    
+    if command -v claude &> /dev/null; then
+        print_status "Claude CLI available"
+    else
+        print_warning "Claude CLI not found - Claude agent will not work"
+    fi
+    
+    if command -v gemini &> /dev/null; then
+        print_status "Gemini CLI available"
+    else
+        print_warning "Gemini CLI not found - Gemini agent will not work"
+    fi
     
     # Check if .env exists
     if [ ! -f ".env" ]; then
@@ -103,9 +115,13 @@ check_prerequisites() {
     
     # Check PostgreSQL connection
     if python -c "
-import psycopg2
+import os
+from app.config import settings
 try:
-    conn = psycopg2.connect('postgresql://erashu212:Enter123_@localhost:5432/cli_eval_db')
+    import psycopg2
+    # Convert SQLAlchemy URL format to psycopg2 format
+    db_url = settings.database_url_str.replace('postgresql+psycopg2://', 'postgresql://')
+    conn = psycopg2.connect(db_url)
     conn.close()
     print('PostgreSQL connection successful')
 except Exception as e:
@@ -120,9 +136,10 @@ except Exception as e:
     
     # Check Redis connection
     if python -c "
-import redis
+from app.config import settings
 try:
-    r = redis.Redis(host='localhost', port=6379, db=0)
+    import redis
+    r = redis.from_url(settings.redis_url_str)
     r.ping()
     print('Redis connection successful')
 except Exception as e:
@@ -178,24 +195,21 @@ start_worker() {
     sleep 3
 }
 
-# Function to verify Docker images
-verify_docker_images() {
-    echo -e "${BLUE}🐳 Verifying Docker images...${NC}"
+# Function to verify agent dependencies
+verify_agent_dependencies() {
+    echo -e "${BLUE}🔧 Verifying agent dependencies...${NC}"
     
-    # Check if base agent image exists
-    if docker image inspect agent-base:latest > /dev/null 2>&1; then
-        print_status "agent-base:latest image found"
+    # Check Python packages
+    if python -c "import openai; print('OpenAI package available')" 2>/dev/null; then
+        print_status "OpenAI package available"
     else
-        print_warning "agent-base:latest image not found, building..."
-        docker build -f dockerfiles/agent-base.Dockerfile -t agent-base:latest .
+        print_warning "OpenAI package not found - LLM judge may not work"
     fi
     
-    # Check if iflow agent image exists
-    if docker image inspect iflow-agent:latest > /dev/null 2>&1; then
-        print_status "iflow-agent:latest image found"
+    if python -c "import anthropic; print('Anthropic package available')" 2>/dev/null; then
+        print_status "Anthropic package available"
     else
-        print_warning "iflow-agent:latest image not found, building..."
-        docker build -f dockerfiles/iflow-agent.Dockerfile -t iflow-agent:latest .
+        print_warning "Anthropic package not found - Claude judge may not work"
     fi
 }
 
@@ -267,7 +281,7 @@ main() {
     # Setup
     setup_logging
     check_prerequisites
-    verify_docker_images
+    verify_agent_dependencies
     
     # Start services
     start_api_server

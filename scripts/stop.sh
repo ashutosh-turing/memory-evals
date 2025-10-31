@@ -83,20 +83,17 @@ kill_port_processes() {
     fi
 }
 
-# Function to cleanup Docker containers
-cleanup_containers() {
-    echo -e "${BLUE}🐳 Cleaning up Docker containers...${NC}"
+# Function to cleanup temporary files
+cleanup_temp_files() {
+    echo -e "${BLUE}🧹 Cleaning up temporary files...${NC}"
     
-    # Stop any running agent containers
-    RUNNING_CONTAINERS=$(docker ps -q --filter "label=agent.type" 2>/dev/null || true)
-    
-    if [ ! -z "$RUNNING_CONTAINERS" ]; then
-        echo -e "${YELLOW}🔪 Stopping agent containers...${NC}"
-        echo $RUNNING_CONTAINERS | xargs docker stop 2>/dev/null || true
-        echo $RUNNING_CONTAINERS | xargs docker rm 2>/dev/null || true
-        print_status "Agent containers cleaned up"
+    # Clean up any temporary agent files
+    if [ -d "storage" ]; then
+        # Remove any incomplete task directories (optional)
+        find storage -name "*.tmp" -delete 2>/dev/null || true
+        print_status "Temporary files cleaned up"
     else
-        print_status "No agent containers running"
+        print_status "No temporary files to clean"
     fi
 }
 
@@ -111,8 +108,8 @@ main() {
     # Kill any remaining processes on API port
     kill_port_processes $API_PORT "API Server"
     
-    # Cleanup Docker containers
-    cleanup_containers
+    # Cleanup temporary files
+    cleanup_temp_files
     
     # Remove log files if requested
     if [ "$1" = "--clean-logs" ]; then
