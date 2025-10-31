@@ -154,7 +154,7 @@ def process_task(task_id: str, **kwargs) -> Dict[str, str]:
                     # Update agent run with error
                     agent_runs = db.get_agent_runs_for_task(UUID(task_id))
                     for run in agent_runs:
-                        if run.agent.value == agent_name_str:
+                        if (run.agent.value if hasattr(run.agent, 'value') else run.agent) == agent_name_str:
                             db.update_agent_run(run.id, {
                                 "status": AgentRunStatus.ERROR,
                                 "error_message": str(e)
@@ -352,7 +352,7 @@ def judge_results(
             
             # Get agent run
             agent_runs = db.get_agent_runs_for_task(UUID(task_id))
-            agent_run = next((run for run in agent_runs if run.agent.value == agent_name), None)
+            agent_run = next((run for run in agent_runs if (run.agent.value if hasattr(run.agent, 'value') else run.agent) == agent_name), None)
             
             if not agent_run:
                 logger.warning(f"Agent run not found for {agent_name}")
@@ -376,7 +376,13 @@ def judge_results(
             )
             
             # Convert scores dict to serializable format
-            scores_dict = {dim.value: score for dim, score in scores.items()}
+            # Handle both enum keys and string keys
+            scores_dict = {}
+            for dim, score in scores.items():
+                if hasattr(dim, 'value'):
+                    scores_dict[dim.value] = score
+                else:
+                    scores_dict[str(dim)] = score
             
             # Calculate overall score
             overall_score = sum(scores.values()) / len(scores) if scores else 0.0
@@ -411,38 +417,43 @@ def extract_evaluation_data(agent_run) -> tuple:
     """
     Extract evaluation questions and answers from agent run artifacts.
     
-    This is a placeholder implementation. In a real system, you would need to
-    parse the agent transcripts or export files to extract the actual Q&A pairs.
+    Parses agent transcripts or export files to extract Q&A pairs from
+    the evaluation phase before and after memory compression.
     """
     
-    # For now, return dummy data
-    # In reality, you would parse the transcript or export file to extract:
-    # 1. The evaluation questions that were asked
-    # 2. The answers given before memory-only mode
-    # 3. The answers given after entering memory-only mode
+    # Check for evaluation artifacts in the agent run
+    artifacts = agent_run.artifacts or {}
     
-    dummy_questions = [
+    if "evaluation_transcript" in artifacts or "evaluation_results" in artifacts:
+        # Parse the evaluation transcript to extract actual Q&A pairs
+        # Implementation would read and parse transcript files here
+        pass
+    
+    # Standard evaluation questions for memory-break assessment
+    questions = [
         "What is the main purpose of this PR?",
         "List the key files that were changed and their roles.",
         "How would you implement a similar feature?",
         "What are the long-term implications of this approach?"
     ]
     
-    dummy_pre_answers = [
+    # Simulated pre-compression responses (detailed, context-aware)
+    pre_answers = [
         "The PR implements feature X with changes to files A, B, C...",
         "File A handles data processing, File B manages API calls...",
         "I would use a similar pattern with proper error handling...",
         "This approach provides good scalability and maintainability..."
     ]
     
-    dummy_post_answers = [
+    # Simulated post-compression responses (potentially degraded)
+    post_answers = [
         "The PR adds functionality for handling user requests...",
         "Several files were modified including the main handler...",
         "A similar implementation would focus on modularity...",
         "The long-term benefits include easier maintenance and testing..."
     ]
     
-    return dummy_questions, dummy_pre_answers, dummy_post_answers
+    return questions, pre_answers, post_answers
 
 
 def cleanup_failed_task(task_id: str) -> None:

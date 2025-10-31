@@ -40,7 +40,7 @@ async def download_artifact(
     
     # Get agent runs for this task
     agent_runs = db.get_agent_runs_for_task(task_id)
-    agent_run = next((run for run in agent_runs if run.agent.value == agent), None)
+    agent_run = next((run for run in agent_runs if (run.agent.value if hasattr(run.agent, 'value') else run.agent) == agent), None)
     
     if not agent_run:
         raise HTTPException(
@@ -145,7 +145,7 @@ async def download_task_bundle(
             
             # Add artifacts from each agent
             for agent_run in agent_runs:
-                agent_name = agent_run.agent.value
+                agent_name = agent_run.agent.value if hasattr(agent_run.agent, 'value') else agent_run.agent
                 
                 # Add agent run metadata
                 agent_info = {

@@ -315,12 +315,17 @@ class LLMJudge(Judge):
             "## Instructions:",
             "",
             "Please evaluate the agent's performance on each rubric dimension by comparing the pre and post compression answers.",
-            "Provide a score from 0.0 to 1.0 for each dimension, where:",
-            "- 0.0 = Complete failure",
-            "- 0.5 = Moderate performance", 
-            "- 1.0 = Excellent performance",
             "",
-            "Format your response as JSON:",
+            "**CRITICAL: You must provide a numeric score between 0.0 and 1.0 for each dimension:**",
+            "- 0.0 = Complete failure or no understanding",
+            "- 0.3 = Poor performance with major gaps",
+            "- 0.5 = Moderate performance with some issues", 
+            "- 0.7 = Good performance with minor issues",
+            "- 1.0 = Excellent performance, maintains quality",
+            "",
+            "Consider how well the agent maintained its understanding and ability to answer after memory compression.",
+            "",
+            "**You MUST format your response as valid JSON with numeric scores:**",
             "```json",
             "{",
             '  "scores": {',
@@ -343,13 +348,26 @@ class LLMJudge(Judge):
         """Query the configured LLM."""
         
         if self.provider == "openai" and hasattr(self, 'openai_client'):
-            response = self.openai_client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=2000,
-                temperature=0.1,
-            )
-            return response.choices[0].message.content
+            # Try with temperature first, fallback without it if model doesn't support it
+            try:
+                response = self.openai_client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=2000,
+                    temperature=0.1,
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                if "temperature" in str(e).lower():
+                    self.logger.warning(f"Model {self.model} doesn't support temperature parameter, using default")
+                    response = self.openai_client.chat.completions.create(
+                        model=self.model,
+                        messages=[{"role": "user", "content": prompt}],
+                        max_tokens=2000,
+                    )
+                    return response.choices[0].message.content
+                else:
+                    raise
             
         elif self.provider == "anthropic" and hasattr(self, 'anthropic_client'):
             response = self.anthropic_client.messages.create(

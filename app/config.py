@@ -86,12 +86,12 @@ class Settings(BaseSettings):
     
     # Judge Configuration
     default_judge: str = Field(default="llm", alias="DEFAULT_JUDGE")  # heuristic | llm
-    judge_model: str = Field(default="gpt-5", alias="JUDGE_MODEL")
+    judge_model: str = Field(default="gpt-4o", alias="JUDGE_MODEL")
     
     # Prompt Generation Configuration
     use_gpt_prompts: bool = Field(default=True, alias="USE_GPT_PROMPTS")  # Use GPT for prompt generation
-    prompt_model: str = Field(default="gpt-5", alias="PROMPT_MODEL")  # Best GPT model for prompts
-    prompt_temperature: float = Field(default=0.7, alias="PROMPT_TEMPERATURE")  # Higher temp for natural variation
+    prompt_model: str = Field(default="gpt-4o", alias="PROMPT_MODEL")  # Use GPT-4o which supports temperature
+    prompt_temperature: float = Field(default=1.0, alias="PROMPT_TEMPERATURE")  # Use default temperature for compatibility
     prompt_max_tokens: int = Field(default=4000, alias="PROMPT_MAX_TOKENS")  # Max tokens per prompt
     
     @property

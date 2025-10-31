@@ -474,7 +474,7 @@ class ContainerWorker:
                 
                 # Get agent run
                 agent_runs = db.get_agent_runs_for_task(UUID(task_id))
-                agent_run = next((run for run in agent_runs if run.agent == agent_name), None)
+                agent_run = next((run for run in agent_runs if (run.agent.value if hasattr(run.agent, 'value') else run.agent) == agent_name), None)
                 
                 if not agent_run:
                     logger.warning(f"Agent run not found for {agent_name}")

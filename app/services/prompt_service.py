@@ -203,18 +203,36 @@ Requirements:
 Use the actual repo name and PR number above. Don't use template variables. Write it like you're talking directly to them."""
 
         try:
-            response = self.client.chat.completions.create(
-                model=settings.prompt_model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a casual developer writing quick messages to a colleague. Write naturally like you're on Slack - short sentences, direct, no fluff. Skip emojis and formal structure. Sound human, not AI."
-                    },
-                    {"role": "user", "content": gpt_prompt}
-                ],
-                temperature=settings.prompt_temperature,
-                max_completion_tokens=settings.prompt_max_tokens
-            )
+            # Try with temperature first, fallback without it if model doesn't support it
+            try:
+                response = self.client.chat.completions.create(
+                    model=settings.prompt_model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": "You are a casual developer writing quick messages to a colleague. Write naturally like you're on Slack - short sentences, direct, no fluff. Skip emojis and formal structure. Sound human, not AI."
+                        },
+                        {"role": "user", "content": gpt_prompt}
+                    ],
+                    temperature=settings.prompt_temperature,
+                    max_completion_tokens=settings.prompt_max_tokens
+                )
+            except Exception as e:
+                if "temperature" in str(e).lower():
+                    self.logger.warning(f"Model {settings.prompt_model} doesn't support temperature {settings.prompt_temperature}, using default")
+                    response = self.client.chat.completions.create(
+                        model=settings.prompt_model,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": "You are a casual developer writing quick messages to a colleague. Write naturally like you're on Slack - short sentences, direct, no fluff. Skip emojis and formal structure. Sound human, not AI."
+                            },
+                            {"role": "user", "content": gpt_prompt}
+                        ],
+                        max_completion_tokens=settings.prompt_max_tokens
+                    )
+                else:
+                    raise
             
             generated_prompt = response.choices[0].message.content.strip()
             
