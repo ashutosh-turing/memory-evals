@@ -1,0 +1,83 @@
+# 📊 Memory-Break Evaluation Questions
+
+Excellent work on your memory-only analysis! Now it's time for the final evaluation phase. I'm going to ask you some specific questions to test different aspects of your memory and understanding.
+
+**Remember**: Answer based only on what you recall from your previous analysis. Be honest if you don't remember something clearly.
+
+---
+
+## 🎯 **AR: Accurate Retrieval** 
+*Testing your ability to accurately recall specific facts and details*
+
+### Q1: **Main Purpose Identification**
+What was the primary purpose or goal of this Pull Request? Be as specific as you can based on what you remember.
+
+### Q2: **File Inventory** 
+List the key files that were changed in this PR. For each file you remember, briefly describe its role or what changes were made to it.
+
+### Q3: **Function/Method Details**
+What are the most important functions, methods, or classes that were modified or added? Name the specific ones you remember and what they do.
+
+---
+
+## 🧠 **TTL: Test-Time Learning**
+*Testing your ability to apply and adapt what you learned*
+
+### Q4: **Implementation Approach**
+If you had to implement a similar feature or fix from scratch, what approach would you take based on what you learned from this PR?
+
+### Q5: **Challenge Assessment**
+From what you observed in the code, what would be the most technically challenging or complex aspect of implementing these changes?
+
+### Q6: **Testing Strategy**
+Based on the implementation you analyzed, how would you go about testing these changes to ensure they work correctly?
+
+---
+
+## 🔄 **LRU: Long-Range Understanding**
+*Testing your understanding of broader context and relationships*
+
+### Q7: **System Architecture**
+How do these changes fit into the overall system architecture? What role do they play in the bigger picture?
+
+### Q8: **Ripple Effects** 
+What other parts of the codebase or system do you think might be affected by these changes? Why?
+
+### Q9: **Long-term Implications**
+What are the long-term benefits or potential issues with the approach taken in this PR?
+
+---
+
+## 🔄 **SF: Selective Forgetting** 
+*Testing your ability to distinguish important vs. less important details*
+
+### Q10: **Rollback Strategy**
+If this PR needed to be reverted due to issues, what would be the key components that must be undone? What's most critical to revert?
+
+### Q11: **Core vs. Peripheral**
+Which aspects of the implementation would you consider "core" that should be preserved, versus "peripheral" details that could be changed without affecting the main functionality?
+
+### Q12: **Scaling Considerations**
+If the system requirements doubled in scale, which parts of this implementation would need modification and which could stay the same?
+
+---
+
+## 📝 **Response Instructions**
+
+For each question, please:
+
+**✅ Be Specific**: Use concrete details you remember rather than vague generalizations
+
+**✅ Be Honest**: If you don't remember clearly, say "I don't recall" or "My memory is unclear on this"
+
+**✅ Stay Grounded**: Only mention things you actually observed in the code
+
+**❌ Don't Guess**: Avoid making up details or filling in gaps with assumptions
+
+**❌ Don't Generalize**: Avoid generic software development advice - focus on this specific PR
+
+**❌ Don't Speculate**: Don't invent features or behaviors not evident in the code you saw
+
+Take your time and answer thoughtfully. Quality of recall and honesty about limitations is more valuable than attempting to answer everything.
+
+Ready? Let's begin with Question 1!

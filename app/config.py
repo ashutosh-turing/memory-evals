@@ -1,0 +1,89 @@
+"""Application configuration using Pydantic Settings."""
+
+from typing import List, Optional
+from pydantic import Field, PostgresDsn, RedisDsn
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """Application settings with environment variable support."""
+    
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="forbid"
+    )
+    
+    # Application
+    app_name: str = Field(default="Memory-Break Orchestrator", alias="APP_NAME")
+    app_version: str = Field(default="0.1.0", alias="APP_VERSION")
+    debug: bool = Field(default=False, alias="DEBUG")
+    
+    # API Server
+    host: str = Field(default="127.0.0.1", alias="HOST")
+    port: int = Field(default=8000, alias="PORT")
+    
+    # Database
+    database_url: PostgresDsn = Field(
+        default="postgresql://user:password@localhost:5432/memory_break_db",
+        alias="DATABASE_URL"
+    )
+    
+    # Redis
+    redis_url: RedisDsn = Field(
+        default="redis://localhost:6379/0",
+        alias="REDIS_URL"
+    )
+    
+    # File Storage
+    run_root: str = Field(default="storage", alias="RUN_ROOT")
+    max_files_per_task: int = Field(default=50, alias="MAX_FILES_PER_TASK")
+    
+    # Agent CLIs
+    iflow_bin: str = Field(default="iflow", alias="IFLOW_BIN")
+    claude_bin: str = Field(default="claude", alias="CLAUDE_BIN")
+    gemini_bin: str = Field(default="gemini", alias="GEMINI_BIN")
+    
+    # API Keys (for LLM Judge)
+    openai_api_key: Optional[str] = Field(default=None, alias="OPENAI_API_KEY")
+    anthropic_api_key: Optional[str] = Field(default=None, alias="ANTHROPIC_API_KEY")
+    google_api_key: Optional[str] = Field(default=None, alias="GOOGLE_API_KEY")
+    
+    # Security
+    allowed_origins: List[str] = Field(
+        default=["http://localhost:3000", "http://localhost:8000"],
+        alias="ALLOWED_ORIGINS"
+    )
+    
+    # Task Processing
+    task_timeout_seconds: int = Field(default=3600, alias="TASK_TIMEOUT_SECONDS")  # 1 hour
+    agent_session_timeout: int = Field(default=1800, alias="AGENT_SESSION_TIMEOUT")  # 30 minutes
+    
+    # Compression Detection
+    compression_threshold_low: int = Field(default=30, alias="COMPRESSION_THRESHOLD_LOW")
+    compression_jump_threshold: int = Field(default=30, alias="COMPRESSION_JUMP_THRESHOLD")
+    
+    # Judge Configuration
+    default_judge: str = Field(default="heuristic", alias="DEFAULT_JUDGE")  # heuristic | llm
+    judge_model: str = Field(default="gpt-4", alias="JUDGE_MODEL")
+    
+    # Prompt Generation Configuration
+    use_gpt_prompts: bool = Field(default=True, alias="USE_GPT_PROMPTS")  # Use GPT for prompt generation
+    prompt_model: str = Field(default="gpt-4o", alias="PROMPT_MODEL")  # Best GPT model for prompts
+    prompt_temperature: float = Field(default=0.3, alias="PROMPT_TEMPERATURE")  # Low temp for consistency
+    prompt_max_tokens: int = Field(default=4000, alias="PROMPT_MAX_TOKENS")  # Max tokens per prompt
+    
+    @property
+    def database_url_str(self) -> str:
+        """Get database URL as string."""
+        return str(self.database_url)
+    
+    @property
+    def redis_url_str(self) -> str:
+        """Get Redis URL as string."""
+        return str(self.redis_url)
+
+
+# Global settings instance
+settings = Settings()

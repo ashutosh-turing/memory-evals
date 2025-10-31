@@ -1,0 +1,68 @@
+# 🧠 Memory-Only Analysis Phase
+
+## ⚠️ **CRITICAL INSTRUCTION: MEMORY-ONLY MODE**
+
+**You are now entering a memory-only phase.** This is a crucial test of your retention and understanding. Here's what you MUST do:
+
+### 🚫 **STRICT RULES:**
+- **DO NOT** look back at, reference, or quote the original file contents
+- **DO NOT** access any previous code snippets or documentation
+- **ONLY** use information that you remember from our previous analysis
+- If you don't remember something clearly, say "I don't recall" rather than guessing
+
+### ✅ **WHAT TO USE:**
+- Your memory and understanding from the previous analysis phases
+- Insights you formed while examining the code
+- Patterns and relationships you identified
+- Key technical concepts you learned
+
+---
+
+## 📝 **Memory-Only Analysis Tasks**
+
+Based purely on what you remember from analyzing the PR, please provide:
+
+### 1. **🎯 PR Summary from Memory**
+- What was the main purpose or goal of this Pull Request?
+- What type of change was this (feature, bug fix, refactor, etc.)?
+- What problem was being solved?
+
+### 2. **📁 Key Files & Their Roles**
+- Which files were the most important in this PR?
+- What role did each key file play in the overall change?
+- How did the files work together?
+
+### 3. **🔧 Implementation Details You Remember**
+- What were the most significant functions, classes, or methods involved?
+- What key algorithms or logic patterns did you observe?
+- What technical approaches were used?
+
+### 4. **⚠️ Risks & Considerations**
+- What potential issues or concerns did you identify?
+- Were there any areas that seemed complex or error-prone?
+- What would be the impact if something went wrong?
+
+### 5. **🏗️ Architecture & Integration**
+- How do you remember these changes fitting into the broader system?
+- What dependencies or integrations were involved?
+- What parts of the system might be affected?
+
+---
+
+## 💡 **Response Guidelines**
+
+**Be Honest About Your Memory:**
+- If you remember something clearly, explain it confidently
+- If you're unsure, say "I believe..." or "My recollection is..."
+- If you don't remember, say "I don't recall this detail"
+- Focus on the aspects that made the strongest impression on you
+
+**Stay Grounded:**
+- Only discuss what you actually analyzed
+- Don't fill in gaps with assumptions
+- It's better to have fewer details than incorrect details
+- Focus on the most memorable and impactful aspects
+
+Remember: This is testing your ability to retain and synthesize information from your analysis, not your ability to guess or reconstruct details you didn't fully process. Quality of recall is more important than quantity.
+
+What do you remember from your analysis?

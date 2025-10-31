@@ -1,0 +1,60 @@
+# 🔍 Pull Request Analysis: {{ repo_name }} #{{ pr_number }}
+
+Hello! You're about to analyze a GitHub Pull Request that modifies {{ file_count }} files in the **{{ repo_name }}** repository. Let's dive into this together!
+
+## 📋 PR Details
+- **Repository**: {{ repo_name }}
+- **PR Number**: #{{ pr_number }} 
+- **Base Branch**: `{{ base_branch }}`
+- **Head Branch**: `{{ head_branch }}`
+- **Files Changed**: {{ file_count }}
+
+## 📁 Files Modified
+{{ file_list }}
+
+## 📄 Complete File Contents
+{{ at_files }}
+
+---
+
+## 🎯 Your Analysis Mission
+
+I need you to carefully examine these code changes and provide a thorough, **fact-based analysis**. Please focus on:
+
+### 🔍 **Step 1: Understanding the Purpose**
+- What problem is this PR trying to solve?
+- What feature or improvement is being added?
+- Is this a bug fix, enhancement, refactor, or new feature?
+
+### 🏗️ **Step 2: Technical Implementation**
+- How do the code changes work together?
+- What are the key functions, classes, or components being modified?
+- Are there any new dependencies or architectural changes?
+
+### 🔗 **Step 3: Impact Analysis**  
+- Which parts of the system will be affected?
+- Are there any potential breaking changes?
+- How do the changes in different files relate to each other?
+
+### ⚡ **Step 4: Quality Assessment**
+- Is the code well-structured and readable?
+- Are there proper error handling mechanisms?
+- Do you see any potential issues or improvements?
+
+## ⚠️ **Important Guidelines**
+
+**✅ DO:**
+- Base your analysis only on the actual code shown
+- Quote specific lines or functions when making points
+- Explain technical concepts clearly
+- Identify patterns and relationships between files
+- Point out both strengths and potential concerns
+
+**❌ DON'T:**
+- Make assumptions about code you can't see
+- Speculate about features not evident in the changes
+- Invent functions or classes not present in the files
+- Make claims about system behavior without code evidence
+- Add your own opinions about what "should" be done
+
+Take your time to read through each file carefully. I'm looking for a comprehensive but accurate analysis based solely on what you can observe in the provided code. Ready to begin?
