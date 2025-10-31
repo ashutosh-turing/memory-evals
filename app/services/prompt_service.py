@@ -213,7 +213,7 @@ Use the actual repo name and PR number above. Don't use template variables. Writ
                     {"role": "user", "content": gpt_prompt}
                 ],
                 temperature=settings.prompt_temperature,
-                max_tokens=settings.prompt_max_tokens
+                max_completion_tokens=settings.prompt_max_tokens
             )
             
             generated_prompt = response.choices[0].message.content.strip()

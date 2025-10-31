@@ -544,8 +544,8 @@ async def get_task_leaderboard(
             execution_time = (run.updated_at - run.created_at).total_seconds()
         
         leaderboard_entry = {
-            "agent": run.agent.value,
-            "status": run.status.value,
+            "agent": run.agent.value if hasattr(run.agent, 'value') else run.agent,
+            "status": run.status.value if hasattr(run.status, 'value') else run.status,
             "overall_score": scores.overall_score if scores else 0.0,
             "scores": {
                 "AR": scores.scores.get("AR", 0.0) if scores else 0.0,
