@@ -1,124 +1,204 @@
 # Memory-Break Orchestrator
 
-A comprehensive evaluation system for testing AI agent performance under memory compression scenarios. The orchestrator automatically tests multiple AI agents (Claude, Gemini, iFlow) against GitHub PRs and evaluates their ability to maintain understanding after memory compression events.
+A production-grade evaluation system for testing AI agent performance under memory compression scenarios. The orchestrator automatically tests multiple AI agents (Claude, Gemini, iFlow) against GitHub PRs and evaluates their ability to maintain understanding after memory compression events.
 
-## Features
+## 🚀 Key Features
 
+### Core Capabilities
 - **Multi-Agent Testing**: Simultaneously evaluate Claude, Gemini, and iFlow agents
 - **Memory Compression Detection**: Automatically detects when agents hit context limits
-- **Real-time Monitoring**: Live progress tracking and logging via web dashboard
+- **Real-time Monitoring**: Live progress tracking and logging via modern React dashboard
 - **LLM-based Judging**: Uses GPT-4o for intelligent evaluation of agent performance
 - **Comprehensive Scoring**: Evaluates across 4 dimensions (AR, TTL, LRU, SF)
-- **Immediate Results**: Agents are judged as soon as they complete (no waiting for batch processing)
+- **Immediate Results**: Agents are judged as soon as they complete
 - **Artifact Management**: Complete transcript and result archival
 
-## Architecture
+### Production Features
+- **SSO Authentication**: Integrated with APAC Atlas Guard Service
+- **Multi-Tenancy**: Organization, team, and project-level isolation
+- **Scalable Architecture**: Cloud Tasks + Pub/Sub for 1000+ RPS
+- **Modern UI**: React + Vite + Tailwind CSS with dark mode
+- **API Versioning**: RESTful API with `/api/v1/` prefix
+- **Real-time Updates**: Server-Sent Events (SSE) for live logs
+
+## 🏗️ Architecture
+
+### High-Level Overview
+```
+┌──────────────────┐    ┌──────────────────┐    ┌──────────────────┐
+│   React UI       │───▶│  SSO Gateway     │───▶│   FastAPI        │
+│  (Vite + React)  │    │  (Auth Guard)    │    │   (Backend)      │
+└──────────────────┘    └──────────────────┘    └──────────────────┘
+                                                          │
+                                                          ▼
+                        ┌─────────────────────────────────────────┐
+                        │         Cloud Tasks + Pub/Sub           │
+                        │  (Async Task Processing - 1000+ RPS)    │
+                        └─────────────────────────────────────────┘
+                                          │
+                                          ▼
+                        ┌─────────────────────────────────────────┐
+                        │      Workers (Auto-scaling)             │
+                        │   Pull from Pub/Sub → Process Tasks     │
+                        └─────────────────────────────────────────┘
+                                          │
+                        ┌─────────────────┴─────────────────┐
+                        ▼                                   ▼
+                ┌──────────────┐                  ┌──────────────┐
+                │  PostgreSQL  │                  │   Storage    │
+                │  (Database)  │                  │  (Artifacts) │
+                └──────────────┘                  └──────────────┘
+```
+
+### Request Flow (< 1s Response Time)
+```
+POST /api/v1/tasks
+    ↓ (< 100ms)
+Create task in DB (status: QUEUED)
+    ↓
+Enqueue to Cloud Tasks
+    ↓
+Return 202 Accepted
+    ↓
+Cloud Task calls /internal/tasks/{id}/process
+    ↓
+Publish to Pub/Sub
+    ↓
+Workers pull and process (5-30 min)
+    ↓
+Real-time updates via SSE
+```
+
+## Project Structure
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Web Dashboard │    │   API Server    │    │   Worker Pool   │
-│   (Frontend)    │◄──►│   (FastAPI)     │◄──►│   (RQ/Redis)    │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                                │                        │
-                                ▼                        ▼
-                       ┌─────────────────┐    ┌─────────────────┐
-                       │   PostgreSQL    │    │  Agent Runners  │
-                       │   (Database)    │    │ Claude/Gemini/  │
-                       └─────────────────┘    │     iFlow       │
-                                              └─────────────────┘
+tools/
+├── backend/          # Backend API and worker services
+│   ├── app/         # FastAPI application
+│   ├── alembic/     # Database migrations
+│   ├── workers/     # Background task workers
+│   ├── scripts/     # Deployment scripts
+│   └── storage/     # Task artifacts and data
+├── ui/              # React + Vite frontend
+│   └── src/         # UI source code
+└── docs/            # Documentation
 ```
 
 ## Quick Start
 
 ### Prerequisites
 - Python 3.11+ (avoid 3.13 due to asyncpg compatibility)
+- Node.js 18+ and pnpm (for UI)
 - PostgreSQL database
-- Redis server
+- Redis server (optional)
 - Agent CLIs: iFlow, Claude, Gemini
 
-### Installation
+### Backend Setup
 
 ```bash
-# 1. Clone and setup environment
-git clone <repository>
-cd cli-eval-poc/tools
+# 1. Navigate to backend
+cd backend
+
+# 2. Create virtual environment
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# 2. Install dependencies
+# 3. Install dependencies
 pip install -e .
 
-# 3. Configure environment
+# 4. Configure environment
 cp .env.example .env
-# Edit .env with your API keys and database settings
+# Edit .env with your configuration
 
-# 4. Setup database
+# 5. Setup database
 alembic upgrade head
 
-# 5. Start services
-# Terminal 1: Redis
-redis-server
-
-# Terminal 2: API Server
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
-
-# Terminal 3: Worker
-python worker.py
-
-# 6. Open dashboard
-open http://localhost:8000
+# 6. Start services (API + Worker)
+./scripts/run.sh
 ```
+
+### UI Setup
+
+```bash
+# 1. Navigate to UI directory
+cd ui
+
+# 2. Install dependencies
+pnpm install
+
+# 3. Configure environment
+cp .env.example .env.local
+# Edit .env.local with your SSO configuration
+
+# 4. Start development server
+pnpm dev
+```
+
+### Access the Application
+
+- **UI**: http://localhost:3000
+- **Backend API**: http://localhost:8001
+- **API Docs**: http://localhost:8001/docs
+- **SSO Gateway** (if running locally): http://localhost:8000
+
+## 📱 UI Features
+
+### Pages
+- **Dashboard**: View all tasks with stats, search, and filtering
+- **Task Detail**: Real-time logs, leaderboard, and agent progress
+- **Leaderboards**: Global agent performance rankings
+- **Settings**: User profile and preferences
+- **Login**: SSO authentication via APAC Atlas Guard
+
+### Features
+- **Dark Mode**: Toggle between light and dark themes
+- **Real-time Updates**: Live task status and log streaming
+- **Responsive Design**: Works on desktop, tablet, and mobile
+- **Multi-tenant**: Filter tasks by user, team, or organization
+- **Search & Filter**: Find tasks quickly with advanced filtering
 
 ## Configuration
 
-### Required Environment Variables
+### Backend Configuration (`backend/env.template`)
 
-#### Database & Redis
+Key configuration options:
+
 ```bash
-DATABASE_URL=postgresql://user:password@localhost:5432/memory_break_db
-REDIS_URL=redis://localhost:6379/0
+# Database
+DATABASE_URL=postgresql+psycopg2://user:pass@localhost:5432/cli_eval_db
+
+# SSO (APAC Atlas Guard)
+SSO_ENABLED=true
+SSO_SERVICE_URL=https://apac-atlas-guard-svc.run.app/v1
+
+# Google Cloud (uses ADC - Application Default Credentials)
+GOOGLE_CLOUD_PROJECT=your-gcp-project-id
+QUEUE_ENABLED=true
+CLOUD_TASKS_QUEUE=pr-evaluation-queue
+PUBSUB_TOPIC=pr-evaluation-tasks
+PUBSUB_SUBSCRIPTION=pr-evaluation-tasks-sub
+
+# Agent API Keys
+ANTHROPIC_API_KEY=sk-ant-...
+GOOGLE_API_KEY=AIza...
+GITHUB_TOKEN=ghp_...
 ```
 
-#### API Keys
-```bash
-# For LLM Judge and Prompt Generation
-OPENAI_API_KEY=your_openai_api_key_here
-ANTHROPIC_API_KEY=your_anthropic_api_key_here
+### UI Configuration (`ui/.env.example`)
 
-# For iFlow Agent (Required)
-IFLOW_API_KEY=your_iflow_api_key_here
+```bash
+# SSO Configuration
+VITE_SSO_SERVICE_URL=http://localhost:8000/v1
+VITE_TEAM_ID=your-team-id
+VITE_REDIRECT_URI=http://localhost:3000/auth/callback
+
+# Service Configuration
+VITE_SERVICE_PREFIX=cli-eval
 ```
 
-#### Agent Configuration
-```bash
-# Model Selection
-CLAUDE_MODEL=claude-sonnet-4-5-20250929
-GEMINI_MODEL=gemini-2.5-pro
-IFLOW_MODEL_NAME=qwen3-coder-plus
-
-# Judge Configuration
-DEFAULT_JUDGE=llm
-JUDGE_MODEL=gpt-4o
-
-# Prompt Generation
-PROMPT_MODEL=gpt-4o
-PROMPT_TEMPERATURE=1.0
-```
-
-### Optional Configuration
-
-#### Performance Tuning
-```bash
-# Task Processing
-TASK_TIMEOUT_SECONDS=7200        # 2 hours max per task
-AGENT_SESSION_TIMEOUT=3600       # 1 hour max per agent
-MAX_CONTEXT_TOKENS=200000        # Token limit for fair comparison
-MAX_TURNS=100                    # Maximum deep-dive iterations
-
-# Compression Detection
-COMPRESSION_THRESHOLD_LOW=30     # Threshold for detecting compression
-COMPRESSION_JUMP_THRESHOLD=30    # Jump threshold for compression events
-```
+For detailed configuration options, refer to:
+- Backend: `backend/env.template` or `backend/README.md`
+- UI: `ui/.env.example`
 
 ## Usage
 
@@ -258,14 +338,177 @@ gemini --version
 - **Task Logs**: Available via web dashboard or API
 - **Agent Transcripts**: Stored in storage/{task_id}/
 
-## Contributing
+## 🚀 Deployment
+
+### Google Cloud Run (Recommended)
+
+#### Prerequisites
+1. Google Cloud Project with billing enabled
+2. Cloud Tasks, Pub/Sub, and Cloud Run APIs enabled
+3. Service account with appropriate permissions
+
+#### Deploy Backend
+```bash
+cd backend
+
+# Build and deploy
+gcloud run deploy memory-break-backend \
+  --source . \
+  --region us-central1 \
+  --allow-unauthenticated \
+  --set-env-vars="SSO_ENABLED=true,QUEUE_ENABLED=true"
+```
+
+#### Deploy Worker
+```bash
+cd backend
+
+# Build worker image
+docker build -f Dockerfile.worker -t gcr.io/PROJECT_ID/memory-break-worker .
+
+# Push to GCR
+docker push gcr.io/PROJECT_ID/memory-break-worker
+
+# Deploy to Cloud Run Jobs or GKE
+gcloud run jobs create memory-break-worker \
+  --image gcr.io/PROJECT_ID/memory-break-worker \
+  --region us-central1
+```
+
+#### Deploy UI
+```bash
+cd ui
+
+# Build production bundle
+pnpm build
+
+# Deploy to Cloud Storage + Cloud CDN or Cloud Run
+gcloud run deploy memory-break-ui \
+  --source . \
+  --region us-central1
+```
+
+#### Setup Cloud Tasks & Pub/Sub
+```bash
+# Create Cloud Tasks queue
+gcloud tasks queues create pr-evaluation-queue \
+  --location=us-central1
+
+# Create Pub/Sub topic
+gcloud pubsub topics create pr-evaluation-tasks
+
+# Create Pub/Sub subscription
+gcloud pubsub subscriptions create pr-evaluation-tasks-sub \
+  --topic=pr-evaluation-tasks \
+  --ack-deadline=600
+```
+
+### Local Development with Cloud Services
+
+```bash
+# Authenticate with Google Cloud
+gcloud auth application-default login
+
+# Set project
+gcloud config set project YOUR_PROJECT_ID
+
+# Run backend (will use ADC)
+cd backend
+./scripts/run.sh
+
+# Run worker (will use ADC)
+python workers/cloud_worker.py
+
+# Run UI
+cd ui
+pnpm dev
+```
+
+## 📊 Monitoring & Observability
+
+### Logs
+- **Backend API**: Cloud Logging or `backend/logs/api.log`
+- **Worker**: Cloud Logging or `backend/logs/cloud_worker.log`
+- **Task Logs**: Available via API `/api/v1/logs/{task_id}/stream`
+
+### Metrics
+- Task creation rate (RPS)
+- Task completion time
+- Agent success/failure rates
+- Queue depth and latency
+
+### Health Checks
+- **Backend**: `GET /health`
+- **Internal**: `GET /internal/health`
+
+## 🐛 Troubleshooting
+
+### SSO Authentication Issues
+```bash
+# Check SSO service is accessible
+curl https://apac-atlas-guard-svc.run.app/v1/health
+
+# Verify headers are being sent
+# Check backend logs for "RAW HEADERS DICT"
+```
+
+### Cloud Tasks Not Working
+```bash
+# Verify queue exists
+gcloud tasks queues describe pr-evaluation-queue --location=us-central1
+
+# Check service URL is correct
+echo $CLOUD_TASKS_SERVICE_URL
+
+# Verify /internal endpoint is accessible (not behind SSO)
+curl http://localhost:8001/internal/health
+```
+
+### Pub/Sub Issues
+```bash
+# Check topic exists
+gcloud pubsub topics describe pr-evaluation-tasks
+
+# Check subscription exists
+gcloud pubsub subscriptions describe pr-evaluation-tasks-sub
+
+# Pull messages manually (for debugging)
+gcloud pubsub subscriptions pull pr-evaluation-tasks-sub --limit=5
+```
+
+### Worker Not Processing Tasks
+```bash
+# Check worker logs
+tail -f backend/logs/cloud_worker.log
+
+# Verify ADC is configured
+gcloud auth application-default print-access-token
+
+# Test Pub/Sub subscription
+python -c "from app.infrastructure.cloud_queue import pubsub_manager; print(pubsub_manager.subscriber)"
+```
+
+## 📚 Additional Documentation
+
+- **Backend API**: See `backend/README.md`
+- **UI Development**: See `ui/README.md`
+- **Architecture Details**: See `docs/ARCHITECTURE.md` (if available)
+- **API Reference**: http://localhost:8001/docs
+
+## 🤝 Contributing
 
 1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
-## License
+## 📝 License
 
 [License information here]
+
+## 🙏 Acknowledgments
+
+- APAC Atlas Guard Service for SSO
+- Google Cloud Platform for infrastructure
+- Anthropic, Google, and iFlow for AI agents
