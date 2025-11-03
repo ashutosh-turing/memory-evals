@@ -164,8 +164,29 @@ class GeminiAgent(AgentAdapter):
         transcript_path = session.output_dir / "transcript.txt"
 
         try:
-            # Run async session
-            result = asyncio.run(self._run_async_session(session, transcript_path))
+            # Check if there's already an event loop running
+            try:
+                asyncio.get_running_loop()
+                # If we're already in an async context, create a new thread with its own event loop
+                import concurrent.futures
+
+                def run_in_new_loop():
+                    """Run async function in a new event loop in a new thread."""
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        return new_loop.run_until_complete(
+                            self._run_async_session(session, transcript_path)
+                        )
+                    finally:
+                        new_loop.close()
+
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_in_new_loop)
+                    result = future.result()
+            except RuntimeError:
+                # No running loop, safe to use asyncio.run()
+                result = asyncio.run(self._run_async_session(session, transcript_path))
 
             # Add file paths to result
             result["artifacts"]["transcript"] = str(transcript_path)

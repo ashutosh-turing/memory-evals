@@ -50,6 +50,7 @@ class TaskResponse(BaseModel):
     started_at: str | None = None
     completed_at: str | None = None
     changed_files: list[str] = []
+    total_files: int | None = None
     error_message: str | None = None
 
 
@@ -413,6 +414,7 @@ def _task_db_to_response(task_db) -> TaskResponse:
         started_at=task_db.started_at.isoformat() if task_db.started_at else None,
         completed_at=task_db.completed_at.isoformat() if task_db.completed_at else None,
         changed_files=task_db.changed_files,
+        total_files=getattr(task_db, "total_files", None),
         error_message=task_db.error_message,
     )
 

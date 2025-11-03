@@ -5,6 +5,7 @@ import logging
 import resource
 import signal
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from uuid import UUID
 
@@ -97,8 +98,16 @@ def process_task(task_id: str, **kwargs) -> dict[str, str]:
 
             pr_result = pr_service.process_pr(task_db.pr_url, task_id)
 
-            # Update task with changed files
-            db.update_task(UUID(task_id), {"changed_files": pr_result.changed_files})
+            # Update task with changed files and total count
+            db.update_task(
+                UUID(task_id),
+                {
+                    "changed_files": pr_result.changed_files,
+                    "total_files": getattr(
+                        pr_result, "total_files", len(pr_result.changed_files)
+                    ),
+                },
+            )
 
             memory_after_pr = check_memory_and_gc()
             logger.info(f"Memory after PR processing: {memory_after_pr:.1f}MB")
@@ -139,40 +148,71 @@ def process_task(task_id: str, **kwargs) -> dict[str, str]:
             # Update task with prompt hash
             db.update_task(UUID(task_id), {"prompt_hash": prompt_hash})
 
-            # Step 3: Process each agent
+            # Step 3: Process all agents in parallel
             agent_results = {}
+            futures = {}
 
-            for agent_name_str in task_db.agents:
-                try:
-                    agent_name = AgentName(agent_name_str)
-                    logger.info(f"Processing agent: {agent_name.value}")
+            def run_agent_with_db(agent_name: AgentName) -> dict:
+                """Run agent session with its own database session."""
+                with Session(engine) as agent_session:
+                    agent_db = DatabaseManager(agent_session)
+                    try:
+                        logger.info(f"Processing agent: {agent_name.value}")
+                        # Run agent session with its own DB session
+                        return run_agent_session(
+                            task_id, agent_name, pr_result, prompts, agent_db
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to process agent {agent_name.value}: {e}")
+                        # Update agent run with error
+                        agent_runs = agent_db.get_agent_runs_for_task(UUID(task_id))
+                        for run in agent_runs:
+                            if (
+                                run.agent.value
+                                if hasattr(run.agent, "value")
+                                else run.agent
+                            ) == agent_name.value:
+                                agent_db.update_agent_run(
+                                    run.id,
+                                    {
+                                        "status": AgentRunStatus.ERROR,
+                                        "error_message": str(e),
+                                    },
+                                )
+                                break
+                        return {"error": str(e)}
 
-                    # Run agent session
-                    agent_result = run_agent_session(
-                        task_id, agent_name, pr_result, prompts, db
-                    )
-                    agent_results[agent_name.value] = agent_result
+            # Process agents in parallel using ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=len(task_db.agents)) as executor:
+                # Submit all agents for parallel execution
+                for agent_name_str in task_db.agents:
+                    try:
+                        agent_name = AgentName(agent_name_str)
+                        logger.info(
+                            f"Submitting agent for parallel execution: {agent_name.value}"
+                        )
+                        # Submit agent to run in parallel
+                        future = executor.submit(run_agent_with_db, agent_name)
+                        futures[future] = agent_name.value
+                    except Exception as e:
+                        logger.error(f"Failed to submit agent {agent_name_str}: {e}")
+                        agent_results[agent_name_str] = {"error": str(e)}
 
-                except Exception as e:
-                    logger.error(f"Failed to process agent {agent_name_str}: {e}")
-                    # Update agent run with error
-                    agent_runs = db.get_agent_runs_for_task(UUID(task_id))
-                    for run in agent_runs:
-                        if (
-                            run.agent.value
-                            if hasattr(run.agent, "value")
-                            else run.agent
-                        ) == agent_name_str:
-                            db.update_agent_run(
-                                run.id,
-                                {
-                                    "status": AgentRunStatus.ERROR,
-                                    "error_message": str(e),
-                                },
-                            )
-                            break
-
-                    agent_results[agent_name_str] = {"error": str(e)}
+                # Wait for all agents to complete and collect results
+                logger.info(
+                    f"Waiting for {len(futures)} agents to complete in parallel..."
+                )
+                for future in as_completed(futures):
+                    agent_name = futures[future]
+                    try:
+                        result = future.result()
+                        agent_results[agent_name] = result
+                        logger.info(
+                            f"Agent {agent_name} completed with status: {result.get('status', 'unknown')}"
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to process agent {agent_name}: {e}")
+                        agent_results[agent_name] = {"error": str(e)}
 
             # Step 4: Judge results (if we have successful agent runs)
             successful_agents = [

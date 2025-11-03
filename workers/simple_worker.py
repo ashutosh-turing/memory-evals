@@ -138,9 +138,15 @@ class SimpleWorker:
                     "pr_clone", 40, f"Cloned {len(pr_result.changed_files)} files"
                 )
 
-                # Update task with changed files
+                # Update task with changed files and total count
                 db.update_task(
-                    UUID(task_id), {"changed_files": pr_result.changed_files}
+                    UUID(task_id),
+                    {
+                        "changed_files": pr_result.changed_files,
+                        "total_files": getattr(
+                            pr_result, "total_files", len(pr_result.changed_files)
+                        ),
+                    },
                 )
 
                 # Step 2: Generate prompts

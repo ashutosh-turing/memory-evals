@@ -63,14 +63,19 @@ async def download_artifact(
     file_path = Path(agent_run.artifacts[artifact_name])
 
     # Security check - ensure file is within expected directory
-    expected_base = Path(settings.run_root).expanduser() / str(task_id) / agent
+    # Note: Artifacts are stored in storage/{task_id}/agents/{agent}/
+    expected_base = (
+        Path(settings.run_root).expanduser() / str(task_id) / "agents" / agent
+    )
     try:
         file_path = file_path.resolve()
         expected_base = expected_base.resolve()
 
         # Check if file is within the expected directory
         if not str(file_path).startswith(str(expected_base)):
-            logger.warning(f"Security violation: attempted access to {file_path}")
+            logger.warning(
+                f"Security violation: attempted access to {file_path}, expected under {expected_base}"
+            )
             raise HTTPException(status_code=403, detail="Access denied")
 
     except (OSError, ValueError) as e:

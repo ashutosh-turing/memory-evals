@@ -181,9 +181,15 @@
                                     <div class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Created</div>
                                     <div class="text-sm text-gray-900">{{ formatDate(task.created_at) }}</div>
                                 </div>
-                                <div v-if="task.changed_files.length > 0">
+                                <div>
                                     <div class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Changed Files</div>
-                                    <div class="text-sm text-gray-900">{{ task.changed_files.length }} files</div>
+                                    <div class="text-sm text-gray-900">
+                                        <span v-if="task.changed_files && task.changed_files.length > 0">
+                                            {{ task.changed_files.length }}<span v-if="task.total_files && task.total_files > task.changed_files.length">/{{ task.total_files }}</span> file{{ task.changed_files.length !== 1 ? 's' : '' }}
+                                            <span v-if="task.total_files && task.total_files > task.changed_files.length" class="text-gray-500 text-xs"> (limited)</span>
+                                        </span>
+                                        <span v-else class="text-gray-400">Analyzing...</span>
+                                    </div>
                                 </div>
                             </div>
 
@@ -441,10 +447,10 @@
                     }
                 },
 
-                async loadTasks() {
-                    // Respect refresh cooldown for production stability
+                async loadTasks(force = false) {
+                    // Respect refresh cooldown for production stability (unless forced)
                     const now = Date.now();
-                    if (now - this.lastRefresh < this.refreshCooldown) {
+                    if (!force && now - this.lastRefresh < this.refreshCooldown) {
                         return;
                     }
                     this.lastRefresh = now;
@@ -599,7 +605,8 @@
                 },
 
                 async refreshTasks() {
-                    await this.loadTasks();
+                    // Force refresh when user clicks the button (bypass cooldown)
+                    await this.loadTasks(true);
                 },
 
                 formatDate(dateString) {

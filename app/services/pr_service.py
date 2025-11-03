@@ -33,6 +33,7 @@ class PRAnalysisResult:
         self.base_branch = base_branch
         self.head_branch = head_branch
         self.commit_sha = commit_sha
+        self.total_files: int | None = None  # Total files before filtering
 
     @property
     def repo_full_name(self) -> str:
@@ -105,14 +106,15 @@ class PRService:
             )
 
             # Filter and validate files
+            total_files_before_filter = len(changed_files)
             filtered_files = self._filter_changed_files(changed_files, master_repo_path)
 
             self.logger.info(
                 f"Successfully processed PR {pr_number}: "
-                f"{len(filtered_files)}/{len(changed_files)} files selected"
+                f"{len(filtered_files)}/{total_files_before_filter} files selected"
             )
 
-            return PRAnalysisResult(
+            result = PRAnalysisResult(
                 repo_path=master_repo_path,  # This is the master copy
                 owner=owner,
                 repo_name=repo_name,
@@ -122,6 +124,9 @@ class PRService:
                 head_branch=head_branch,
                 commit_sha=commit_sha,
             )
+            # Store total files count for display
+            result.total_files = total_files_before_filter
+            return result
 
         except Exception as e:
             self.logger.error(f"Failed to process PR {pr_url}: {e}")

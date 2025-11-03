@@ -125,10 +125,12 @@ class GPTPromptService:
             "total_files": len(pr_result.changed_files),
             "file_list": file_list,
             "max_files": max_files,
-            # Content for analysis
+            # Content for analysis (include in context for uniqueness)
             "at_files": at_files_content,
             # Metadata
             "truncated": len(pr_result.changed_files) > max_files,
+            # Add unique identifier based on PR to ensure variation
+            "pr_identifier": f"{pr_result.repo_full_name}#{pr_result.pr_number}",
         }
 
         return context
@@ -192,33 +194,63 @@ class GPTPromptService:
             prompt_type, generation_instructions["precompression"]
         )
 
-        # Create GPT prompt for prompt generation
-        gpt_prompt = f"""Write a casual message asking someone to analyze this PR. Write like you're messaging a colleague on Slack.
+        # Build unique context with actual file content snippets
+        file_content_preview = ""
+        if context.get("at_files"):
+            # Include a sample of actual file content to make prompts more unique
+            file_content_sample = context["at_files"][:500]  # First 500 chars
+            file_content_preview = (
+                f"\n\nSample file content:\n{file_content_sample}...\n"
+            )
 
-PR: {context["repo_name"]} #{context["pr_number"]}
-Files changed: {context["file_count"]}
-{context["file_list"]}
+        # Include branch and commit info for uniqueness
+        branch_info = ""
+        if context.get("base_branch") and context.get("head_branch"):
+            branch_info = (
+                f"Branches: {context['base_branch']} -> {context['head_branch']}\n"
+            )
+        if context.get("commit_sha"):
+            branch_info += f"Commit: {context['commit_sha'][:8]}\n"
+
+        # Create GPT prompt for prompt generation with more context
+        gpt_prompt = f"""Write a unique, casual message asking someone to analyze this specific PR. Write like you're messaging a colleague on Slack. Make it specific to THIS PR, not generic.
+
+PR Details:
+- Repository: {context["repo_name"]}
+- PR Number: #{context["pr_number"]}
+- Files changed: {context["file_count"]} files
+{branch_info}
+File list:
+{context["file_list"]}{file_content_preview}
 
 What you need to do: {instruction["role"]}
 
-Keep it natural and conversational. Short sentences. No emojis. No fancy formatting. Just tell them what to look at and remind them to only talk about code they actually see.
-
-This is for {prompt_type} - {instruction["focus"]}
+IMPORTANT:
+- Make this message SPECIFIC to this PR - reference the actual files and repo
+- Vary your language and phrasing - don't use the same structure as other prompts
+- Keep it natural and conversational. Short sentences. No emojis. No fancy formatting.
+- Tell them what to look at and remind them to only talk about code they actually see.
+- This is for {prompt_type} - {instruction["focus"]}
 
 Requirements:
 {chr(10).join(f"- {req}" for req in instruction["requirements"])}
 
-Use the actual repo name and PR number above. Don't use template variables. Write it like you're talking directly to them."""
+Write a unique message tailored to THIS specific PR. Don't be generic."""
 
         try:
             # Try with temperature first, fallback without it if model doesn't support it
+            # Add slight variation by including PR identifier in system message for uniqueness
+            system_message = f"""You are a casual developer writing quick messages to a colleague. Write naturally like you're on Slack - short sentences, direct, no fluff. Skip emojis and formal structure. Sound human, not AI.
+
+This prompt is for PR {context.get('pr_identifier', 'unknown')} - make your response unique to this specific PR."""
+
             try:
                 response = self.client.chat.completions.create(
                     model=settings.prompt_model,
                     messages=[
                         {
                             "role": "system",
-                            "content": "You are a casual developer writing quick messages to a colleague. Write naturally like you're on Slack - short sentences, direct, no fluff. Skip emojis and formal structure. Sound human, not AI.",
+                            "content": system_message,
                         },
                         {"role": "user", "content": gpt_prompt},
                     ],
@@ -235,7 +267,7 @@ Use the actual repo name and PR number above. Don't use template variables. Writ
                         messages=[
                             {
                                 "role": "system",
-                                "content": "You are a casual developer writing quick messages to a colleague. Write naturally like you're on Slack - short sentences, direct, no fluff. Skip emojis and formal structure. Sound human, not AI.",
+                                "content": system_message,
                             },
                             {"role": "user", "content": gpt_prompt},
                         ],

@@ -30,6 +30,9 @@ class TaskDB(SQLModel, table=True):
     agents: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     rubric: list[str] = Field(default_factory=list, sa_column=Column(JSON))
     changed_files: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    total_files: int | None = Field(
+        default=None, sa_column=Column(Integer)
+    )  # Total files in PR before filtering
 
     # Metadata
     prompt_hash: str | None = Field(default=None, sa_column=Column(String(64)))
