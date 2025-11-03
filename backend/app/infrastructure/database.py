@@ -37,6 +37,7 @@ class TaskDB(SQLModel, table=True):
     # JSON fields
     agents: List[str] = Field(default_factory=list, sa_column=Column(JSON))
     rubric: List[str] = Field(default_factory=list, sa_column=Column(JSON))
+    rubric_thresholds: Optional[Dict[str, float]] = Field(default=None, sa_column=Column(JSON))
     changed_files: List[str] = Field(default_factory=list, sa_column=Column(JSON))
     
     # Metadata
@@ -92,6 +93,11 @@ class ScoreDB(SQLModel, table=True):
     scores: Dict[str, float] = Field(default_factory=dict, sa_column=Column(JSON))  # dimension -> score
     overall_score: float = Field(default=0.0, sa_column=Column(Float, nullable=False))
     passed: bool = Field(default=False, sa_column=Column(Boolean, nullable=False))
+    
+    # Breaking analysis
+    breaking_dimensions: Optional[List[str]] = Field(default=None, sa_column=Column(JSON))
+    breaking_details: Optional[Dict[str, str]] = Field(default=None, sa_column=Column(JSON))
+    thresholds_used: Optional[Dict[str, float]] = Field(default=None, sa_column=Column(JSON))
     
     # Judge information
     judge_type: str = Field(sa_column=Column(String(50), nullable=False))

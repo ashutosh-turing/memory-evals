@@ -27,7 +27,7 @@ class TaskProcessRequest(BaseModel):
 
 @router.post("/tasks/{task_id}/process")
 async def process_task_internal(
-    task_id: UUID,
+    task_id: str,  # Changed from UUID to string to avoid validation errors
     request: Request,
 ) -> Dict[str, str]:
     """
@@ -41,27 +41,46 @@ async def process_task_internal(
     The actual task processing happens asynchronously via Pub/Sub workers.
     """
     
-    logger.info(f"Received Cloud Task for task {task_id}")
+    logger.info(f"[INTERNAL] Received Cloud Task request for task {task_id}")
+    logger.info(f"[INTERNAL] Request headers: {dict(request.headers)}")
     
     try:
-        # Parse request body
-        body = await request.json()
-        task_id_str = body.get("task_id", str(task_id))
-        metadata = body.get("metadata", {})
+        # Parse request body (may be empty for Cloud Tasks)
+        try:
+            body = await request.json()
+            logger.info(f"[INTERNAL] Request body: {body}")
+            task_id_str = body.get("task_id", str(task_id))
+            metadata = body.get("metadata", {})
+        except Exception as e:
+            logger.warning(f"[INTERNAL] Failed to parse request body, using defaults: {e}")
+            task_id_str = str(task_id)
+            metadata = {}
+        
+        logger.info(f"[INTERNAL] Processing task_id={task_id_str}, metadata={metadata}")
         
         # Verify task exists in database
         with next(get_session()) as session:
             db = DatabaseManager(session)
-            task_db = db.get_task(task_id)
+            logger.info(f"[INTERNAL] Checking if task {task_id} exists in database...")
+            # Convert string to UUID for database query
+            try:
+                task_uuid = UUID(task_id)
+            except ValueError as e:
+                logger.error(f"[INTERNAL] Invalid UUID format: {task_id} - {e}")
+                raise HTTPException(status_code=400, detail=f"Invalid task ID format: {task_id}")
+            
+            task_db = db.get_task(task_uuid)
             
             if not task_db:
-                logger.error(f"Task {task_id} not found in database")
+                logger.error(f"[INTERNAL] Task {task_id} not found in database")
                 raise HTTPException(status_code=404, detail="Task not found")
+            
+            logger.info(f"[INTERNAL] Task found: status={task_db.status}, created={task_db.created_at}")
             
             # Check if task is still in QUEUED status
             if task_db.status != TaskStatus.QUEUED:
                 logger.warning(
-                    f"Task {task_id} is not in QUEUED status (current: {task_db.status})"
+                    f"[INTERNAL] Task {task_id} is not in QUEUED status (current: {task_db.status})"
                 )
                 return {
                     "message": f"Task already processed (status: {task_db.status})",
@@ -69,6 +88,7 @@ async def process_task_internal(
                 }
         
         # Publish to Pub/Sub for worker processing
+        logger.info(f"[INTERNAL] Publishing task {task_id} to Pub/Sub...")
         pubsub_manager = get_pubsub_manager()
         message_id = pubsub_manager.publish_task(
             task_id=task_id_str,
@@ -77,7 +97,7 @@ async def process_task_internal(
         
         if message_id:
             logger.info(
-                f"Task {task_id} published to Pub/Sub: {message_id}"
+                f"[INTERNAL] ✓ Task {task_id} successfully published to Pub/Sub: {message_id}"
             )
             return {
                 "message": "Task published for processing",
@@ -85,16 +105,18 @@ async def process_task_internal(
                 "message_id": message_id
             }
         else:
-            logger.error(f"Failed to publish task {task_id} to Pub/Sub")
+            logger.error(f"[INTERNAL] ✗ Failed to publish task {task_id} to Pub/Sub")
             raise HTTPException(
                 status_code=500,
                 detail="Failed to publish task to Pub/Sub"
             )
         
-    except HTTPException:
+    except HTTPException as he:
+        logger.error(f"[INTERNAL] HTTP Exception for task {task_id}: {he.status_code} - {he.detail}")
         raise
     except Exception as e:
-        logger.error(f"Error processing internal task {task_id}: {e}")
+        logger.error(f"[INTERNAL] Unexpected error processing task {task_id}: {type(e).__name__}: {str(e)}")
+        logger.exception(e)  # This will log the full traceback
         raise HTTPException(
             status_code=500,
             detail=f"Internal error: {str(e)}"

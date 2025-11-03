@@ -51,6 +51,9 @@ class Task(BaseModel):
     pr_number: int
     agents: List[AgentName]
     rubric: List[RubricDimension] = Field(default_factory=lambda: list(RubricDimension))
+    rubric_thresholds: Optional[Dict[RubricDimension, float]] = Field(
+        default=None
+    )
     status: TaskStatus = TaskStatus.QUEUED
     max_files: int = Field(default=50, ge=1, le=1000)
     
@@ -179,6 +182,11 @@ class Score(BaseModel):
     overall_score: float = 0.0
     passed: bool = False
     
+    # Breaking analysis
+    breaking_dimensions: List[str] = Field(default_factory=list)
+    breaking_details: Dict[str, str] = Field(default_factory=dict)
+    thresholds_used: Dict[RubricDimension, float] = Field(default_factory=dict)
+    
     # Judge information
     judge_type: str  # "heuristic" or "llm"
     judge_model: Optional[str] = None
@@ -191,17 +199,30 @@ class Score(BaseModel):
     # Timestamps
     created_at: datetime = Field(default_factory=datetime.utcnow)
     
-    def calculate_overall_score(self) -> None:
-        """Calculate overall score and pass/fail status."""
+    def calculate_overall_score(self, thresholds: Dict[RubricDimension, float]) -> None:
+        """Calculate overall score and validate against thresholds."""
         if not self.scores:
             self.overall_score = 0.0
             self.passed = False
             return
         
         self.overall_score = sum(self.scores.values()) / len(self.scores)
-        # Pass if >= 3/4 dimensions score >= 0.5 (or similar threshold)
-        passing_scores = sum(1 for score in self.scores.values() if score >= 0.5)
-        self.passed = passing_scores >= max(3, len(self.scores) * 0.75)
+        self.thresholds_used = thresholds.copy()
+        
+        # Check each dimension against threshold
+        self.breaking_dimensions = []
+        self.breaking_details = {}
+        
+        for dimension, score in self.scores.items():
+            threshold = thresholds.get(dimension, 0.7)
+            if score < threshold:
+                self.breaking_dimensions.append(dimension.value)
+                self.breaking_details[dimension.value] = (
+                    f"{dimension.value}: {score:.2f} < {threshold:.2f} (FAILED)"
+                )
+        
+        # Pass only if NO dimensions broke
+        self.passed = len(self.breaking_dimensions) == 0
 
 
 class Artifact(BaseModel):

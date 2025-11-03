@@ -116,7 +116,7 @@ def configure_middleware(app: FastAPI) -> None:
     if not settings.debug:
         app.add_middleware(
             TrustedHostMiddleware,
-            allowed_hosts=["localhost", "127.0.0.1", settings.host],
+            allowed_hosts=["*"],
         )
     
     # Custom middleware (order matters - SSO auth should be early in the chain)

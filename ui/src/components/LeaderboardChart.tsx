@@ -57,6 +57,11 @@ export const LeaderboardChart = ({ leaderboard, rubric }: LeaderboardChartProps)
                 <p className="text-sm text-gray-500 dark:text-gray-400">
                   {entry.passed ? 'Passed' : 'Failed'} evaluation
                 </p>
+                {!entry.passed && entry.breaking_dimensions && entry.breaking_dimensions.length > 0 && (
+                  <div className="mt-1 text-xs text-error-600 dark:text-error-400 font-medium">
+                    ❌ Failed: {entry.breaking_dimensions.join(', ')}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -75,19 +80,31 @@ export const LeaderboardChart = ({ leaderboard, rubric }: LeaderboardChartProps)
           <div className="space-y-3">
             {rubric.map((dimension) => {
               const score = entry.scores[dimension as keyof typeof entry.scores] || 0
+              const threshold = entry.thresholds_used?.[dimension] ?? 0.7
+              const failed = score < threshold
+              const passIcon = failed ? '❌' : '✅'
+              
               return (
                 <div key={dimension}>
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                      {dimension}
-                    </span>
-                    <span className={`text-sm font-bold ${getScoreColor(score)}`}>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-sm font-medium ${failed ? 'text-error-700 dark:text-error-400' : 'text-gray-700 dark:text-gray-300'}`}>
+                        {dimension}
+                      </span>
+                      <span className="text-xs">{passIcon}</span>
+                      {failed && (
+                        <span className="text-xs text-error-600 dark:text-error-400 font-medium">
+                          (threshold: {(threshold * 100).toFixed(0)}%)
+                        </span>
+                      )}
+                    </div>
+                    <span className={`text-sm font-bold ${failed ? 'text-error-600 dark:text-error-400' : getScoreColor(score)}`}>
                       {(score * 100).toFixed(0)}%
                     </span>
                   </div>
                   <div className="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
                     <div
-                      className={`h-full ${getScoreBg(score)} transition-all duration-500`}
+                      className={`h-full ${failed ? 'bg-error-500 dark:bg-error-600' : getScoreBg(score)} transition-all duration-500`}
                       style={{ width: `${score * 100}%` }}
                     />
                   </div>

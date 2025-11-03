@@ -27,6 +27,7 @@ class CreateTaskRequest(BaseModel):
     pr_url: HttpUrl
     agents: List[AgentName] = Field(default=[AgentName.IFLOW, AgentName.CLAUDE, AgentName.GEMINI])
     rubric: List[RubricDimension] = Field(default_factory=lambda: list(RubricDimension))
+    rubric_thresholds: Optional[Dict[str, float]] = None  # e.g., {"AR": 0.8, "TTL": 0.7}
     max_files: int = Field(default=50, ge=1, le=1000)
 
 
@@ -139,6 +140,14 @@ async def create_task(
             "max_files": task_request.max_files,
         }
         
+        # Add threshold configuration if provided
+        if task_request.rubric_thresholds:
+            # Convert string keys to RubricDimension enums
+            task_data["rubric_thresholds"] = {
+                RubricDimension(k): v 
+                for k, v in task_request.rubric_thresholds.items()
+            }
+        
         # Add user context if available (from SSO)
         if user_context:
             task_data.update({
@@ -180,11 +189,11 @@ async def create_task(
                 else:
                     logger.warning(f"Cloud Tasks not available, falling back to direct processing")
                     # Fallback to synchronous processing if Cloud Tasks fails
-            db.update_task(task_db.id, {"status": TaskStatus.RUNNING.value})
+                    db.update_task(task_db.id, {"status": TaskStatus.RUNNING.value})
                     process_task_simple(str(task_db.id))
             
-        except Exception as e:
-            logger.error(f"Failed to enqueue task {task_db.id}: {e}")
+            except Exception as e:
+                logger.error(f"Failed to enqueue task {task_db.id}: {e}")
                 # Fallback to synchronous processing
                 db.update_task(task_db.id, {"status": TaskStatus.RUNNING.value})
                 process_task_simple(str(task_db.id))
@@ -659,7 +668,10 @@ async def get_task_leaderboard(
             },
             "passed": scores.passed if scores else False,
             "execution_time": execution_time,
-            "compression_detected": run.stats.get("compression_detected", False) if run.stats else False
+            "compression_detected": run.stats.get("compression_detected", False) if run.stats else False,
+            "breaking_dimensions": scores.breaking_dimensions if scores else [],
+            "breaking_details": scores.breaking_details if scores else {},
+            "thresholds_used": scores.thresholds_used if scores else {}
         }
         leaderboard_data.append(leaderboard_entry)
     

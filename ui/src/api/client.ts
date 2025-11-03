@@ -98,11 +98,44 @@ class ApiClient {
     return response.data
   }
 
-  // Log streaming (returns EventSource for SSE)
-  createLogStream(taskId: string): EventSource {
+  // Poll task logs with ETag caching
+  async pollTaskLogs(taskId: string, etag?: string): Promise<{
+    logs: any[]
+    status: string
+    etag: string | null
+    log_count: number
+    has_log_file: boolean
+  } | null> {
     const token = localStorage.getItem('auth_token')
-    const url = `${this.baseUrl}/logs/${taskId}/stream${token ? `?token=${token}` : ''}`
-    return new EventSource(url)
+    const url = `${this.baseUrl}/logs/${taskId}/poll`
+    
+    const headers: Record<string, string> = {
+      'Authorization': `Bearer ${token}`,
+    }
+    
+    // Add ETag header if we have one
+    if (etag) {
+      headers['If-None-Match'] = etag
+    }
+    
+    const response = await fetch(url, { headers })
+    
+    // 304 Not Modified - no new content
+    if (response.status === 304) {
+      return null
+    }
+    
+    if (!response.ok) {
+      throw new Error(`Poll failed: ${response.statusText}`)
+    }
+    
+    const data = await response.json()
+    const newEtag = response.headers.get('ETag')
+    
+    return {
+      ...data,
+      etag: newEtag
+    }
   }
 
   // Artifacts

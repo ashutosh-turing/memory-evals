@@ -97,7 +97,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
     
     def __init__(self, app: ASGIApp):
         super().__init__(app)
-        self.blocked_paths = {"/admin", "/internal"}
+        self.blocked_paths = {"/admin"}  # /internal is protected by OIDC at router level
         # More reasonable rate limits for production
         self.rate_limit_paths = {
             "/api/v1/tasks": 100,  # Allow 100 task requests per minute
@@ -109,7 +109,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         """Process request with security checks."""
         
-        # Block access to internal paths
+        # Block access to admin paths (internal paths are protected by OIDC in the router)
         if any(request.url.path.startswith(path) for path in self.blocked_paths):
             return JSONResponse(
                 status_code=403,
@@ -259,16 +259,16 @@ class SSOAuthMiddleware(BaseHTTPMiddleware):
         self.logger.info("=" * 80)
         
         # Extract user context from headers added by SSO Gateway
-        # SSO Guard now sends all 12 required headers
+        # SSO Guard sends all 12 required headers after JWT validation
         user_context = {
-            "user_id": request.headers.get("X-User-ID"),  # Now using X-User-ID instead of X-User-Sub
+            "user_id": request.headers.get("X-User-ID"),
             "email": request.headers.get("X-User-Email"),
             "name": request.headers.get("X-User-Name"),
             "picture": request.headers.get("X-User-Picture"),
             "org_id": request.headers.get("X-Org-ID"),
             "team_id": request.headers.get("X-Team-ID"),
             "team_name": request.headers.get("X-Team-Name"),
-            "project_id": request.headers.get("X-Project-ID") or None,  # Convert empty string to None
+            "project_id": request.headers.get("X-Project-ID") or None,
             "project_name": request.headers.get("X-Project-Name"),
             "user_role": request.headers.get("X-User-Role"),
             "team_role": request.headers.get("X-Team-Role"),

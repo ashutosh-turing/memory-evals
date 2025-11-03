@@ -93,6 +93,9 @@ export interface LeaderboardEntry {
   passed: boolean
   execution_time: number
   compression_detected: boolean
+  breaking_dimensions?: string[]
+  breaking_details?: Record<string, string>
+  thresholds_used?: Record<string, number>
 }
 
 export interface Leaderboard {

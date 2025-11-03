@@ -2,12 +2,13 @@
 
 import json
 import logging
+import hashlib
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from typing import AsyncGenerator, Optional, List, Dict, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Header, Response
+from fastapi.responses import StreamingResponse, JSONResponse
 from sqlmodel import Session
 
 from app.infrastructure.database import get_session, DatabaseManager
@@ -22,6 +23,102 @@ logger = logging.getLogger(__name__)
 def get_db_manager(session: Session = Depends(get_session)) -> DatabaseManager:
     """Get database manager dependency."""
     return DatabaseManager(session)
+
+
+@router.get("/{task_id}/poll")
+async def poll_task_logs(
+    task_id: UUID,
+    response: Response,
+    if_none_match: Optional[str] = Header(None),
+    db: DatabaseManager = Depends(get_db_manager),
+) -> JSONResponse:
+    """
+    Poll task logs with ETag caching support.
+    
+    Returns:
+        - 200 with logs if content changed
+        - 304 Not Modified if ETag matches (no content change)
+    """
+    
+    # Verify task exists
+    task = db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Get log file path
+    log_file_path = Path(settings.run_root).expanduser() / str(task_id) / "task.log"
+    
+    # Initialize response data
+    logs: List[Dict[str, Any]] = []
+    task_status = task.status.value if hasattr(task.status, 'value') else str(task.status)
+    
+    # Read log file if it exists
+    if log_file_path.exists():
+        try:
+            with open(log_file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                
+                # Calculate ETag from content
+                etag = hashlib.md5(content.encode()).hexdigest()
+                
+                # Check if client has cached version
+                if if_none_match and if_none_match.strip('"') == etag:
+                    # Content hasn't changed, return 304
+                    response.status_code = 304
+                    response.headers["ETag"] = f'"{etag}"'
+                    response.headers["Cache-Control"] = "no-cache"
+                    return JSONResponse(content=None, status_code=304)
+                
+                # Parse log lines
+                for line in content.strip().split('\n'):
+                    if line.strip():
+                        try:
+                            log_entry = json.loads(line)
+                            logs.append(log_entry)
+                        except json.JSONDecodeError:
+                            # Plain text log line - wrap it
+                            logs.append({
+                                'type': 'log',
+                                'level': 'INFO',
+                                'message': line,
+                                'timestamp': task.created_at.isoformat()
+                            })
+                
+                # Set ETag and caching headers
+                response.headers["ETag"] = f'"{etag}"'
+                response.headers["Cache-Control"] = "no-cache"
+                
+        except Exception as e:
+            logger.error(f"Error reading log file: {e}")
+            # Return empty logs with error info
+            logs = [{
+                'type': 'error',
+                'level': 'ERROR',
+                'message': f'Error reading logs: {str(e)}',
+                'timestamp': task.created_at.isoformat()
+            }]
+    else:
+        # No log file yet - return empty with task info
+        # Calculate ETag for empty state
+        etag = hashlib.md5(f"empty-{task_status}".encode()).hexdigest()
+        
+        if if_none_match and if_none_match.strip('"') == etag:
+            response.status_code = 304
+            response.headers["ETag"] = f'"{etag}"'
+            response.headers["Cache-Control"] = "no-cache"
+            return JSONResponse(content=None, status_code=304)
+        
+        response.headers["ETag"] = f'"{etag}"'
+        response.headers["Cache-Control"] = "no-cache"
+    
+    # Return logs with metadata
+    return JSONResponse(content={
+        'task_id': str(task_id),
+        'status': task_status,
+        'logs': logs,
+        'log_count': len(logs),
+        'has_log_file': log_file_path.exists()
+    })
 
 
 @router.get("/{task_id}/stream")
@@ -78,6 +175,7 @@ async def stream_task_logs(
                 # Send any existing content first
                 existing_content = f.read()
                 if existing_content.strip():
+                    line_count = 0
                     for line in existing_content.split('\n'):
                         if line.strip():
                             try:
@@ -91,6 +189,11 @@ async def stream_task_logs(
                             except json.JSONDecodeError:
                                 # Handle plain text logs
                                 yield f"data: {json.dumps({'type': 'log', 'level': 'INFO', 'message': line, 'timestamp': task.created_at.isoformat()})}\n\n"
+                            
+                            # Flush every 10 lines to send data immediately
+                            line_count += 1
+                            if line_count % 10 == 0:
+                                await asyncio.sleep(0)  # Force flush
                 
                 last_position = f.tell()
                 
@@ -115,15 +218,17 @@ async def stream_task_logs(
                                     if 'level' not in log_data:
                                         log_data['level'] = 'INFO'
                                     yield f"data: {json.dumps(log_data)}\n\n"
+                                    await asyncio.sleep(0)  # Flush immediately for live logs
                                 except json.JSONDecodeError:
                                     yield f"data: {json.dumps({'type': 'log', 'level': 'INFO', 'message': line, 'timestamp': task.created_at.isoformat()})}\n\n"
+                                    await asyncio.sleep(0)  # Flush immediately
                         last_position = f.tell()
                     
                     # Send heartbeat to keep connection alive
                     if int(time.time()) % 30 == 0:  # Every 30 seconds
                         yield f"data: {json.dumps({'type': 'heartbeat', 'level': 'INFO', 'message': 'Connection alive', 'timestamp': task.created_at.isoformat()})}\n\n"
                     
-                    await asyncio.sleep(1)  # Non-blocking sleep
+                    await asyncio.sleep(0.5)  # Faster polling for more responsive streaming
                         
         except Exception as e:
             logger.error(f"Error streaming logs for task {task_id}: {e}")

@@ -544,6 +544,12 @@ class SimpleWorker:
                 
                 rubric = [RubricDimension(dim) for dim in task_db.rubric]
                 
+                # Get thresholds from task (default to 0.7 for all dimensions if not set)
+                if hasattr(task_db, 'rubric_thresholds') and task_db.rubric_thresholds:
+                    thresholds = task_db.rubric_thresholds
+                else:
+                    thresholds = {dim: 0.7 for dim in rubric}
+                
                 # Get agent runs for task
                 agent_runs = judge_db.get_agent_runs_for_task(UUID(task_id))
                 agent_run = next((run for run in agent_runs if self._get_agent_name(run) == agent_name), None)
@@ -569,6 +575,21 @@ class SimpleWorker:
                             judge_type=settings.default_judge
                         )
                         
+                        # Create Score entity to validate against thresholds
+                        from app.domain.entities import Score
+                        score_entity = Score(
+                            agent_run_id=agent_run.id,
+                            task_id=UUID(task_id),
+                            agent=AgentName(agent_name),
+                            scores=scores,  # Dict[RubricDimension, float]
+                            judge_type=judge_type_used,
+                            judge_model=settings.judge_model if judge_type_used == "llm" else None,
+                            rationale=rationale
+                        )
+                        
+                        # Calculate overall score and validate against thresholds
+                        score_entity.calculate_overall_score(thresholds)
+                        
                         # Convert scores dict to serializable format
                         scores_dict = {}
                         for dim, score in scores.items():
@@ -577,26 +598,90 @@ class SimpleWorker:
                             else:
                                 scores_dict[str(dim)] = score
                         
-                        overall_score = sum(scores.values()) / len(scores) if scores else 0.0
-                        passing_scores = sum(1 for score in scores.values() if score >= 0.5)
-                        passed = passing_scores >= max(3, len(rubric) * 0.75)
+                        overall_score = score_entity.overall_score
+                        passed = score_entity.passed
+                        
+                        # Log breaking analysis if failed
+                        if not passed:
+                            logger.warning(
+                                f"Agent {agent_name} FAILED - Breaking dimensions: "
+                                f"{', '.join(score_entity.breaking_dimensions)}"
+                            )
+                            for detail in score_entity.breaking_details.values():
+                                logger.info(f"  {detail}")
                         
                     else:
                         # Fallback to heuristic evaluation
                         logger.info(f"No evaluation data found for {agent_name}, using heuristic judge")
-                        scores_dict, overall_score, passed, rationale = self._evaluate_agent_run(
+                        scores_dict_temp, _, _, rationale = self._evaluate_agent_run(
                             agent_run, rubric
                         )
                         judge_type_used = "heuristic"
                         
+                        # Convert scores back to RubricDimension keys for Score entity
+                        scores = {RubricDimension(k): v for k, v in scores_dict_temp.items()}
+                        
+                        # Create Score entity to validate against thresholds
+                        from app.domain.entities import Score
+                        score_entity = Score(
+                            agent_run_id=agent_run.id,
+                            task_id=UUID(task_id),
+                            agent=AgentName(agent_name),
+                            scores=scores,
+                            judge_type=judge_type_used,
+                            rationale=rationale
+                        )
+                        score_entity.calculate_overall_score(thresholds)
+                        
+                        scores_dict = scores_dict_temp
+                        overall_score = score_entity.overall_score
+                        passed = score_entity.passed
+                        
+                        # Log breaking analysis if failed
+                        if not passed:
+                            logger.warning(
+                                f"Agent {agent_name} FAILED - Breaking dimensions: "
+                                f"{', '.join(score_entity.breaking_dimensions)}"
+                            )
+                            for detail in score_entity.breaking_details.values():
+                                logger.info(f"  {detail}")
+                        
                 except Exception as e:
                     logger.warning(f"LLM judge failed for {agent_name}, using heuristic fallback: {e}")
-                    scores_dict, overall_score, passed, rationale = self._evaluate_agent_run(
+                    scores_dict_temp, _, _, rationale = self._evaluate_agent_run(
                         agent_run, rubric
                     )
                     judge_type_used = "heuristic"
+                    
+                    # Convert scores back to RubricDimension keys for Score entity
+                    scores = {RubricDimension(k): v for k, v in scores_dict_temp.items()}
+                    
+                    # Create Score entity to validate against thresholds
+                    from app.domain.entities import Score
+                    score_entity = Score(
+                        agent_run_id=agent_run.id,
+                        task_id=UUID(task_id),
+                        agent=AgentName(agent_name),
+                        scores=scores,
+                        judge_type=judge_type_used,
+                        rationale=rationale
+                    )
+                    score_entity.calculate_overall_score(thresholds)
+                    
+                    scores_dict = scores_dict_temp
+                    overall_score = score_entity.overall_score
+                    passed = score_entity.passed
+                    
+                    # Log breaking analysis if failed
+                    if not passed:
+                        logger.warning(
+                            f"Agent {agent_name} FAILED - Breaking dimensions: "
+                            f"{', '.join(score_entity.breaking_dimensions)}"
+                        )
+                        for detail in score_entity.breaking_details.values():
+                            logger.info(f"  {detail}")
                 
-                # Store score in database
+                # Store score in database with breaking analysis
                 score_data = {
                     "agent_run_id": agent_run.id,
                     "task_id": UUID(task_id),
@@ -606,7 +691,10 @@ class SimpleWorker:
                     "passed": passed,
                     "judge_type": judge_type_used,
                     "judge_model": settings.judge_model if judge_type_used == "llm" else None,
-                    "rationale": rationale
+                    "rationale": rationale,
+                    "breaking_dimensions": score_entity.breaking_dimensions if 'score_entity' in locals() else [],
+                    "breaking_details": score_entity.breaking_details if 'score_entity' in locals() else {},
+                    "thresholds_used": {dim.value: threshold for dim, threshold in (score_entity.thresholds_used.items() if 'score_entity' in locals() else {})}
                 }
                 
                 judge_db.create_score(score_data)

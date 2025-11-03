@@ -98,6 +98,7 @@ class Settings(BaseSettings):
         alias="PUBSUB_SUBSCRIPTION"
     )
     queue_enabled: bool = Field(default=True, alias="QUEUE_ENABLED")
+    cloud_tasks_verify_oidc: bool = Field(default=True, alias="CLOUD_TASKS_VERIFY_OIDC")
     
     # Task Processing
     task_timeout_seconds: int = Field(default=7200, alias="TASK_TIMEOUT_SECONDS")  # 2 hours
