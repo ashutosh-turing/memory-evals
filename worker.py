@@ -9,8 +9,8 @@ from pathlib import Path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
-from app.infrastructure.queue import worker_manager
 from app.config import settings
+from app.infrastructure.queue import worker_manager
 
 # Configure logging
 logging.basicConfig(
@@ -18,7 +18,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("worker.log") if not settings.debug else logging.StreamHandler()
+        logging.FileHandler("worker.log")
+        if not settings.debug
+        else logging.StreamHandler(),
     ],
 )
 
@@ -27,27 +29,26 @@ logger = logging.getLogger(__name__)
 
 def main():
     """Start the worker process."""
-    
+
     logger.info("Starting Memory-Break Orchestrator worker...")
     logger.info(f"Redis URL: {settings.redis_url}")
     logger.info(f"Run root: {settings.run_root}")
-    
+
     try:
         # Initialize database for worker
         from app.infrastructure.database import create_tables
+
         create_tables()
         logger.info("Database tables initialized")
-        
+
         # Start worker (Redis URL is already configured in queue manager)
-        worker = worker_manager.start_worker(
-            worker_name="memory-break-worker"
-        )
-        
+        worker = worker_manager.start_worker(worker_name="memory-break-worker")
+
         logger.info("Worker started, listening for jobs...")
-        
+
         # This will block and process jobs
         worker.work()
-        
+
     except KeyboardInterrupt:
         logger.info("Worker stopped by user")
     except Exception as e:

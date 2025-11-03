@@ -4,7 +4,7 @@ Hello! You're about to analyze a GitHub Pull Request that modifies {{ file_count
 
 ## 📋 PR Details
 - **Repository**: {{ repo_name }}
-- **PR Number**: #{{ pr_number }} 
+- **PR Number**: #{{ pr_number }}
 - **Base Branch**: `{{ base_branch }}`
 - **Head Branch**: `{{ head_branch }}`
 - **Files Changed**: {{ file_count }}
@@ -31,7 +31,7 @@ I need you to carefully examine these code changes and provide a thorough, **fac
 - What are the key functions, classes, or components being modified?
 - Are there any new dependencies or architectural changes?
 
-### 🔗 **Step 3: Impact Analysis**  
+### 🔗 **Step 3: Impact Analysis**
 - Which parts of the system will be affected?
 - Are there any potential breaking changes?
 - How do the changes in different files relate to each other?

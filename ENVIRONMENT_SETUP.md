@@ -88,14 +88,14 @@ COMPRESSION_JUMP_THRESHOLD=30
 ### Judge Configuration
 ```bash
 DEFAULT_JUDGE=llm
-JUDGE_MODEL=gpt-4o
+JUDGE_MODEL=gpt-5
 ```
 
 ### Prompt Generation Configuration
 ```bash
 USE_GPT_PROMPTS=true
-PROMPT_MODEL=gpt-4o
-PROMPT_TEMPERATURE=1.0
+PROMPT_MODEL=gpt-5-mini
+PROMPT_TEMPERATURE=0.8
 PROMPT_MAX_TOKENS=4000
 ```
 
@@ -127,4 +127,3 @@ docker build -f dockerfiles/iflow-agent.Dockerfile -t iflow-agent:latest .
 3. Check the container logs at `storage/{task_id}/agents/iflow/container_stdout.log`
    - You should see "100% context left" instead of "Disconnected"
    - The agent should successfully initialize and accept prompts
-

@@ -39,10 +39,10 @@ print_error() {
 kill_port_processes() {
     local port=$1
     echo -e "${YELLOW}🔍 Checking for processes on port $port...${NC}"
-    
+
     # Find processes using the port
     PIDS=$(lsof -ti:$port 2>/dev/null || true)
-    
+
     if [ ! -z "$PIDS" ]; then
         echo -e "${YELLOW}🔪 Killing processes on port $port: $PIDS${NC}"
         echo $PIDS | xargs kill -9 2>/dev/null || true
@@ -58,20 +58,20 @@ check_service() {
     local service_name=$2
     local max_attempts=30
     local attempt=1
-    
+
     echo -e "${YELLOW}🔍 Waiting for $service_name to be ready...${NC}"
-    
+
     while [ $attempt -le $max_attempts ]; do
         if curl -s -f "$url" > /dev/null 2>&1; then
             print_status "$service_name is ready!"
             return 0
         fi
-        
+
         echo -n "."
         sleep 1
         attempt=$((attempt + 1))
     done
-    
+
     print_error "$service_name failed to start after $max_attempts attempts"
     return 1
 }
@@ -79,40 +79,40 @@ check_service() {
 # Function to check prerequisites
 check_prerequisites() {
     echo -e "${BLUE}🔍 Checking prerequisites...${NC}"
-    
+
     # Check Python
     if ! command -v python &> /dev/null; then
         print_error "Python not found"
         exit 1
     fi
     print_status "Python available: $(python --version)"
-    
+
     # Check Agent CLIs
     if command -v iflow &> /dev/null; then
         print_status "iFlow CLI available"
     else
         print_warning "iFlow CLI not found - iFlow agent will not work"
     fi
-    
+
     if command -v claude &> /dev/null; then
         print_status "Claude CLI available"
     else
         print_warning "Claude CLI not found - Claude agent will not work"
     fi
-    
+
     if command -v gemini &> /dev/null; then
         print_status "Gemini CLI available"
     else
         print_warning "Gemini CLI not found - Gemini agent will not work"
     fi
-    
+
     # Check if .env exists
     if [ ! -f ".env" ]; then
         print_warning ".env file not found, using defaults"
     else
         print_status ".env file found"
     fi
-    
+
     # Check PostgreSQL connection
     if python -c "
 import os
@@ -133,7 +133,7 @@ except Exception as e:
         print_error "PostgreSQL connection failed"
         exit 1
     fi
-    
+
     # Check Redis connection
     if python -c "
 from app.config import settings
@@ -156,21 +156,21 @@ except Exception as e:
 # Function to start API server
 start_api_server() {
     echo -e "${BLUE}🚀 Starting API server...${NC}"
-    
+
     # Kill any existing processes on the API port
     kill_port_processes $API_PORT
-    
+
     # Start the API server in the background
     nohup $PYTHON_CMD -m uvicorn app.main:app \
         --host $API_HOST \
         --port $API_PORT \
         --log-level info \
         > logs/api.log 2>&1 &
-    
+
     API_PID=$!
     echo $API_PID > logs/api.pid
     print_status "API server started (PID: $API_PID)"
-    
+
     # Check if API server is responding
     if check_service "http://$API_HOST:$API_PORT/health/" "API Server"; then
         print_status "API server health check passed"
@@ -183,14 +183,14 @@ start_api_server() {
 # Function to start worker
 start_worker() {
     echo -e "${BLUE}👷 Starting worker process...${NC}"
-    
+
     # Start the worker in the background
     nohup $PYTHON_CMD worker.py > logs/worker.log 2>&1 &
-    
+
     WORKER_PID=$!
     echo $WORKER_PID > logs/worker.pid
     print_status "Worker started (PID: $WORKER_PID)"
-    
+
     # Give worker time to initialize
     sleep 3
 }
@@ -198,14 +198,14 @@ start_worker() {
 # Function to verify agent dependencies
 verify_agent_dependencies() {
     echo -e "${BLUE}🔧 Verifying agent dependencies...${NC}"
-    
+
     # Check Python packages
     if python -c "import openai; print('OpenAI package available')" 2>/dev/null; then
         print_status "OpenAI package available"
     else
         print_warning "OpenAI package not found - LLM judge may not work"
     fi
-    
+
     if python -c "import anthropic; print('Anthropic package available')" 2>/dev/null; then
         print_status "Anthropic package available"
     else
@@ -250,7 +250,7 @@ show_services() {
 # Cleanup function for graceful shutdown
 cleanup() {
     echo -e "\n${YELLOW}🛑 Shutting down services...${NC}"
-    
+
     if [ -f logs/api.pid ]; then
         API_PID=$(cat logs/api.pid)
         if kill -0 $API_PID 2>/dev/null; then
@@ -259,7 +259,7 @@ cleanup() {
         fi
         rm -f logs/api.pid
     fi
-    
+
     if [ -f logs/worker.pid ]; then
         WORKER_PID=$(cat logs/worker.pid)
         if kill -0 $WORKER_PID 2>/dev/null; then
@@ -268,7 +268,7 @@ cleanup() {
         fi
         rm -f logs/worker.pid
     fi
-    
+
     echo -e "${GREEN}✅ Cleanup complete${NC}"
     exit 0
 }
@@ -282,14 +282,14 @@ main() {
     setup_logging
     check_prerequisites
     verify_agent_dependencies
-    
+
     # Start services
     start_api_server
     start_worker
-    
+
     # Show status
     show_services
-    
+
     # Keep script running to handle signals
     echo -e "${YELLOW}Press Ctrl+C to stop all services${NC}"
     while true; do

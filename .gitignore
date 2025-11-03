@@ -231,3 +231,73 @@ test_logs/
 storage/
 .cursor/
 !dockerfiles/
+
+# Pre-commit
+.pre-commit-cache/
+.pre-commit-repos/
+
+# Ruff
+.ruff_cache/
+ruff.lock
+
+# Bandit
+.bandit
+*.bandit
+
+# Detect-secrets
+# Note: .secrets.baseline should be committed to the repo
+# (it tracks known secrets, not actual secrets)
+
+# Pytest
+.pytest_cache/
+.tox/
+.hypothesis/
+
+# Coverage reports
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# IDE - Additional
+*.sublime-project
+*.sublime-workspace
+.project
+.pydevproject
+.settings/
+*.code-workspace
+
+# Docker
+docker-compose.override.yml
+.dockerignore
+
+# Local configuration
+.env.local
+.env.*.local
+local_settings.py
+
+# Redis dumps
+dump.rdb
+
+# PostgreSQL
+*.pgsql
+pgdata/
+
+# Temporary files
+*.swp
+*.swo
+*~
+*.bak
+*.backup
+
+# PID files
+*.pid
+
+# Lock files (optional - uncomment if you don't want to commit)
+# poetry.lock
+# Pipfile.lock

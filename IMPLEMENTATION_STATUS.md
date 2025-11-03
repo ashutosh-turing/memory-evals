@@ -109,7 +109,7 @@ Example refactor:
 ```python
 # OLD (Docker-based)
 subprocess.run([
-    "docker", "run", 
+    "docker", "run",
     "-v", f"{repo_dir}:/agent/workspace",
     "iflow-agent:latest"
 ])
@@ -208,4 +208,3 @@ FastAPI → Worker → Agent SDK → Direct API Calls
 - Update deployment instructions
 - Add SDK troubleshooting guide
 - Document comparison API endpoint
-
