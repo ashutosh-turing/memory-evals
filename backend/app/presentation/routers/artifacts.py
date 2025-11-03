@@ -6,12 +6,14 @@ from pathlib import Path
 from typing import Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlmodel import Session
 from uuid import UUID
+import io
 
 from app.infrastructure.database import get_session, DatabaseManager
 from app.config import settings
+from app.services.jsonl_exporter import get_jsonl_exporter
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -135,7 +137,7 @@ async def download_task_bundle(
                 "task_id": str(task_id),
                 "repo": task_db.repo,
                 "pr_number": task_db.pr_number,
-                "status": task_db.status.value,
+                "status": task_db.status.value if hasattr(task_db.status, 'value') else str(task_db.status),
                 "agents": task_db.agents,
                 "created_at": task_db.created_at.isoformat(),
             }
@@ -145,12 +147,12 @@ async def download_task_bundle(
             
             # Add artifacts from each agent
             for agent_run in agent_runs:
-                agent_name = agent_run.agent.value if hasattr(agent_run.agent, 'value') else agent_run.agent
+                agent_name = agent_run.agent.value if hasattr(agent_run.agent, 'value') else str(agent_run.agent)
                 
                 # Add agent run metadata
                 agent_info = {
                     "agent": agent_name,
-                    "status": agent_run.status.value,
+                    "status": agent_run.status.value if hasattr(agent_run.status, 'value') else str(agent_run.status),
                     "milestones": agent_run.milestones,
                     "stats": agent_run.stats,
                     "created_at": agent_run.created_at.isoformat(),
@@ -281,3 +283,66 @@ def _cleanup_temp_file(file_path: str):
             logger.warning(f"Failed to cleanup temp file {file_path}: {e}")
     
     return cleanup
+
+
+@router.get("/{task_id}/evaluation.jsonl")
+async def download_evaluation_jsonl(
+    task_id: UUID,
+    db: DatabaseManager = Depends(get_db_manager),
+) -> StreamingResponse:
+    """
+    Download evaluation data for all agents in JSONL format.
+    
+    Returns a single .jsonl file where each line is a JSON object representing
+    one agent's complete evaluation data.
+    """
+    
+    logger.info(f"Generating evaluation JSONL for task {task_id}")
+    
+    # Verify task exists
+    task_db = db.get_task(task_id)
+    if not task_db:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Get all agent runs for this task
+    agent_runs = db.get_agent_runs_for_task(task_id)
+    if not agent_runs:
+        raise HTTPException(
+            status_code=404,
+            detail="No agent runs found for this task"
+        )
+    
+    # Get scores for each agent
+    scores_map = {}
+    for agent_run in agent_runs:
+        agent_name = agent_run.agent.value if hasattr(agent_run.agent, 'value') else str(agent_run.agent)
+        scores = db.get_scores_for_agent_run(agent_run.id)
+        if scores:
+            scores_map[agent_name] = scores
+    
+    # Generate JSONL content
+    exporter = get_jsonl_exporter()
+    try:
+        jsonl_content = exporter.generate_task_jsonl(task_db, agent_runs, scores_map)
+    except Exception as e:
+        logger.error(f"Failed to generate JSONL for task {task_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate evaluation JSONL: {str(e)}"
+        )
+    
+    # Create a file-like object from the string
+    jsonl_bytes = jsonl_content.encode('utf-8')
+    jsonl_stream = io.BytesIO(jsonl_bytes)
+    
+    # Return as downloadable file
+    filename = f"{task_id}_evaluation.jsonl"
+    
+    return StreamingResponse(
+        jsonl_stream,
+        media_type="application/x-ndjson",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(jsonl_bytes))
+        }
+    )

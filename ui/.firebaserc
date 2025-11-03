@@ -1,0 +1,7 @@
+{
+  "projects": {
+    "default": "turing-delivery-apac-dev",
+    "production": "turing-delivery-apac-prod"
+  }
+}
+

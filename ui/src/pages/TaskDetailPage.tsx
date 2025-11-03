@@ -21,7 +21,7 @@ import {
   LiveLogViewer,
   useToast 
 } from '../components'
-import { formatDistanceToNow } from 'date-fns'
+import { formatDistanceToNow, parseISO } from 'date-fns'
 
 export const TaskDetailPage = () => {
   const { taskId } = useParams<{ taskId: string }>()
@@ -161,6 +161,20 @@ export const TaskDetailPage = () => {
                 <Download className="w-4 h-4" />
                 <span>Download Bundle</span>
               </button>
+              <button
+                onClick={async () => {
+                  try {
+                    await apiClient.downloadTaskJSONL(taskId!)
+                  } catch (error) {
+                    console.error('Failed to download JSONL:', error)
+                  }
+                }}
+                disabled={task.status === 'queued' || task.status === 'running'}
+                className="btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Download className="w-4 h-4" />
+                <span>Download JSONL</span>
+              </button>
             </div>
           </div>
         </div>
@@ -217,7 +231,7 @@ export const TaskDetailPage = () => {
                       <span>Created</span>
                     </div>
                     <p className="text-sm font-medium text-gray-900 dark:text-white">
-                      {formatDistanceToNow(new Date(task.created_at), { addSuffix: true })}
+                      {formatDistanceToNow(parseISO(task.created_at), { addSuffix: true })}
                     </p>
                   </div>
                   <div>
@@ -259,6 +273,7 @@ export const TaskDetailPage = () => {
                 <LeaderboardChart
                   leaderboard={leaderboardData.leaderboard}
                   rubric={task.rubric}
+                  taskId={taskId}
                 />
               </div>
             ) : (

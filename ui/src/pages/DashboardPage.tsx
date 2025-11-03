@@ -37,6 +37,11 @@ export const DashboardPage = () => {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
 
+  // Determine effective role
+  const effectiveRole = user?.global_role || user?.user_role
+  const canViewTeamTasks = effectiveRole && ['team_admin', 'org_admin', 'super_admin'].includes(effectiveRole)
+  const canViewAllTasks = effectiveRole && ['org_admin', 'super_admin'].includes(effectiveRole)
+
   // Queries
   const { data: tasksData, isLoading, refetch } = useTasks({ page, page_size: 20, filter })
   const createTaskMutation = useCreateTask()
@@ -51,12 +56,31 @@ export const DashboardPage = () => {
     return () => clearInterval(interval)
   }, [refetch])
 
-  // Update filter from URL params
+  // Update filter from URL params and validate permissions
   useEffect(() => {
     if (filterParam !== filter) {
+      // Check if user has permission for the requested filter
+      if (filterParam === 'team_tasks' && !canViewTeamTasks) {
+        showToast({
+          type: 'error',
+          title: 'Access Denied',
+          message: 'You need team_admin or higher role to view team tasks',
+        })
+        setSearchParams({ filter: 'my_tasks' })
+        return
+      }
+      if (filterParam === 'all' && !canViewAllTasks) {
+        showToast({
+          type: 'error',
+          title: 'Access Denied',
+          message: 'You need org_admin or higher role to view all tasks',
+        })
+        setSearchParams({ filter: 'my_tasks' })
+        return
+      }
       setFilter(filterParam)
     }
-  }, [filterParam])
+  }, [filterParam, canViewTeamTasks, canViewAllTasks])
 
   const handleCreateTask = async (data: CreateTaskRequest) => {
     try {

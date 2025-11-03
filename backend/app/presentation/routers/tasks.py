@@ -248,8 +248,15 @@ async def list_tasks(
         team_id_filter = None
         org_id_filter = None
         
-        if user_context:
-            user_role = user_context.get("user_role", "")
+        # Allow public access to all tasks for leaderboard purposes
+        if filter == "all":
+            # No filtering - show all tasks across all orgs
+            logger.info("Public access: showing all tasks for leaderboard")
+        elif user_context:
+            # Check global_role first (for org-level admins), then fall back to user_role
+            user_role = user_context.get("global_role") or user_context.get("user_role", "")
+            logger.info(f"User role for filtering: {user_role} (from global_role or user_role)")
+            logger.info(f"Full user context: {user_context}")
             
             # Default to my_tasks if no filter specified
             if filter is None or filter == "my_tasks":
@@ -258,25 +265,28 @@ async def list_tasks(
             
             elif filter == "team_tasks":
                 # Check if user is team_admin or higher
-                if user_role in ["team_admin", "org_admin", "super_admin"]:
+                # Be more permissive - allow if role contains admin or if super_admin
+                is_admin = (
+                    user_role in ["team_admin", "org_admin", "super_admin"] or
+                    "admin" in str(user_role).lower() or
+                    user_role == "super_admin"
+                )
+                
+                if is_admin:
                     team_id_filter = user_context.get("team_id")
-                    logger.info(f"Filtering tasks for team: {team_id_filter}")
+                    logger.info(f"Filtering tasks for team: {team_id_filter} (role: {user_role})")
                 else:
+                    logger.warning(f"User {user_context.get('email')} with role {user_role} attempted to access team_tasks")
                     raise HTTPException(
                         status_code=403,
-                        detail="Insufficient permissions to view team tasks"
+                        detail=f"Insufficient permissions to view team tasks. Your role: {user_role}"
                     )
-            
-            elif filter == "all":
-                # Check if user is org_admin or higher
-                if user_role in ["org_admin", "super_admin"]:
-                    org_id_filter = user_context.get("org_id")
-                    logger.info(f"Filtering tasks for org: {org_id_filter}")
-                else:
-                    raise HTTPException(
-                        status_code=403,
-                        detail="Insufficient permissions to view all tasks"
-                    )
+        else:
+            # No user context and no filter=all - require authentication
+            raise HTTPException(
+                status_code=401,
+                detail="Authentication required"
+            )
         
         # Get tasks from database
         tasks_db, total = db.list_tasks(
@@ -681,4 +691,120 @@ async def get_task_leaderboard(
     return {
         "task_id": task_id,
         "leaderboard": leaderboard_data
+    }
+
+
+@router.get("/{task_id}/agents/{agent_name}/details")
+async def get_agent_details(
+    task_id: str,
+    agent_name: str,
+    session: Session = Depends(get_session)
+) -> Dict[str, Any]:
+    """Get detailed agent run with full judge rationale."""
+    
+    db = DatabaseManager(session)
+    
+    # Get all agent runs for the task
+    agent_runs = db.get_agent_runs_for_task(UUID(task_id))
+    
+    # Find the specific agent run (handle both string and enum cases)
+    agent_run = next((r for r in agent_runs if 
+                      r.agent == agent_name or 
+                      (hasattr(r.agent, 'value') and r.agent.value == agent_name) or
+                      str(r.agent) == agent_name), None)
+    
+    if not agent_run:
+        raise HTTPException(status_code=404, detail=f"Agent run not found for {agent_name}")
+    
+    # Get scores for this agent run
+    scores = db.get_scores_for_agent_run(agent_run.id)
+    
+    return {
+        "agent_run": {
+            "id": str(agent_run.id),
+            "agent": agent_run.agent.value if hasattr(agent_run.agent, 'value') else agent_run.agent,
+            "status": agent_run.status.value if hasattr(agent_run.status, 'value') else agent_run.status,
+            "error_message": agent_run.error_message,
+            "stats": agent_run.stats or {},
+            "milestones": agent_run.milestones or {},
+            "created_at": agent_run.created_at.isoformat() + 'Z',
+            "updated_at": agent_run.updated_at.isoformat() + 'Z',
+            "started_at": agent_run.started_at.isoformat() + 'Z' if agent_run.started_at else None,
+            "completed_at": agent_run.completed_at.isoformat() + 'Z' if agent_run.completed_at else None,
+        },
+        "scores": {
+            "overall_score": scores.overall_score if scores else 0.0,
+            "dimension_scores": scores.scores if scores else {},
+            "rationale": scores.rationale if scores else "",
+            "breaking_dimensions": scores.breaking_dimensions if scores else [],
+            "breaking_details": scores.breaking_details if scores else {},
+            "thresholds_used": scores.thresholds_used if scores else {},
+            "passed": scores.passed if scores else False,
+            "judge_type": scores.judge_type if scores else None,
+            "judge_model": scores.judge_model if scores else None,
+        } if scores else None
+    }
+
+
+@router.post("/{task_id}/retry")
+async def retry_task(
+    task_id: str,
+    agents: Optional[List[str]] = None,
+    session: Session = Depends(get_session)
+) -> Dict[str, str]:
+    """Retry failed agents or entire task."""
+    
+    db = DatabaseManager(session)
+    
+    # Verify task exists
+    try:
+        task_db = db.get_task(UUID(task_id))
+    except Exception:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Get all agent runs for the task
+    agent_runs = db.get_agent_runs_for_task(UUID(task_id))
+    
+    if not agent_runs:
+        raise HTTPException(status_code=404, detail="No agent runs found for this task")
+    
+    # Reset agent runs to queued
+    retry_count = 0
+    for run in agent_runs:
+        agent_name = run.agent.value if hasattr(run.agent, 'value') else run.agent
+        # If specific agents requested, only retry those; otherwise retry all failed/error agents
+        if agents is None:
+            # Retry only failed/error agents
+            if run.status in [AgentRunStatus.ERROR]:
+                db.update_agent_run(run.id, {
+                    "status": AgentRunStatus.QUEUED,
+                    "error_message": None
+                })
+                retry_count += 1
+                logger.info(f"Reset {agent_name} to queued status")
+        elif agent_name in agents:
+            # Retry specific requested agents
+            db.update_agent_run(run.id, {
+                "status": AgentRunStatus.QUEUED,
+                "error_message": None
+            })
+            retry_count += 1
+            logger.info(f"Reset {agent_name} to queued status")
+    
+    if retry_count == 0:
+        return {"status": "success", "message": "No agents to retry"}
+    
+    # Re-publish task to Pub/Sub
+    try:
+        pubsub_manager = get_cloud_tasks_manager()
+        if hasattr(pubsub_manager, 'publish_task'):
+            pubsub_manager.publish_task(task_id)
+            logger.info(f"Re-published task {task_id} to Pub/Sub for retry")
+    except Exception as e:
+        logger.error(f"Failed to re-publish task to Pub/Sub: {e}")
+        # Don't fail the request if Pub/Sub publish fails
+    
+    return {
+        "status": "success",
+        "message": f"Successfully re-queued {retry_count} agent(s)"
     }

@@ -5,18 +5,27 @@ import {
   Users, 
   Trophy
 } from 'lucide-react'
+import { useAuth } from '../contexts/AuthContext'
 
 interface SidebarProps {
   className?: string
 }
 
 export const Sidebar = ({ className = '' }: SidebarProps) => {
+  const { user } = useAuth()
+  
+  // Determine effective role (global_role takes precedence)
+  const effectiveRole = user?.global_role || user?.user_role
+  
+  // Check if user has team_admin or higher privileges
+  const canViewTeamTasks = effectiveRole && ['team_admin', 'org_admin', 'super_admin'].includes(effectiveRole)
+  
   const navigation = [
-    { name: 'Dashboard', href: '/', icon: LayoutDashboard },
-    { name: 'My Tasks', href: '/?filter=my_tasks', icon: ListTodo },
-    { name: 'Team Tasks', href: '/?filter=team_tasks', icon: Users },
-    { name: 'Leaderboards', href: '/leaderboards', icon: Trophy },
-  ]
+    { name: 'Dashboard', href: '/', icon: LayoutDashboard, show: true },
+    { name: 'My Tasks', href: '/?filter=my_tasks', icon: ListTodo, show: true },
+    { name: 'Team Tasks', href: '/?filter=team_tasks', icon: Users, show: canViewTeamTasks },
+    { name: 'Leaderboards', href: '/leaderboards', icon: Trophy, show: true },
+  ].filter(item => item.show)
 
   return (
     <aside className={`sidebar ${className}`}>

@@ -25,3 +25,11 @@ export const useLeaderboard = (taskId: string | undefined) => {
   })
 }
 
+export const useAgentDetails = (taskId: string | undefined, agentName: string | null) => {
+  return useQuery({
+    queryKey: ['agent-details', taskId, agentName],
+    queryFn: () => apiClient.getAgentDetails(taskId!, agentName!),
+    enabled: !!taskId && !!agentName,
+  })
+}
+

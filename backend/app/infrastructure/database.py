@@ -66,6 +66,7 @@ class AgentRunDB(SQLModel, table=True):
     milestones: Dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))  # datetime as ISO string
     artifacts: Dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
     stats: Dict[str, str] = Field(default_factory=dict, sa_column=Column(JSON))
+    qa_interactions: Optional[List[Dict]] = Field(default=None, sa_column=Column(JSON))  # turn-by-turn Q&A
     
     # Error handling
     error_message: Optional[str] = Field(default=None, sa_column=Column(Text))

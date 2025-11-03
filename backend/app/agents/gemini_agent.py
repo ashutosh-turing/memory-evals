@@ -274,33 +274,58 @@ class GeminiAgent(AgentAdapter):
                     else:
                         raise
                 
-                # Phase 5: Evaluator questions
+                # Phase 5: Evaluator questions - PARSE INDIVIDUAL Q&A
                 self.logger.info("=" * 80)
                 self.logger.info("PHASE 5: Evaluator Questions")
                 self.logger.info("=" * 80)
                 
-                try:
-                    response = await chat.send_message_async(session.prompts["evaluator_set"])
+                # Define evaluation questions
+                eval_questions = [
+                    "What is the main purpose of this PR?",
+                    "List the key files that were changed and their roles.",
+                    "How would you implement a similar feature?",
+                    "What are the long-term implications of this approach?"
+                ]
+                
+                # Ask each question and collect answers
+                evaluation_qa = []
+                for i, question in enumerate(eval_questions):
+                    self.logger.info(f"Question {i+1}: {question}")
                     
-                    if hasattr(response, 'usage_metadata'):
-                        total_tokens += response.usage_metadata.prompt_token_count
-                        total_tokens += response.usage_metadata.candidates_token_count
-                    
-                    responses.append({"phase": "evaluation", "response": response.text})
-                    
-                    log_file.write(f"USER (Evaluation): {session.prompts['evaluator_set']}\n\n")
-                    log_file.write(f"ASSISTANT: {response.text}\n\n")
-                    log_file.write(f"Tokens used: {total_tokens:,} / {self.max_tokens:,}\n")
-                    log_file.write("=" * 80 + "\n\n")
-                    
-                    milestones.append("evaluation_complete")
-                    
-                except Exception as e:
-                    self.logger.error(f"Evaluation phase failed: {e}")
-                    if "token limit" in str(e).lower() or "quota" in str(e).lower():
-                        self.logger.warning("Cannot continue - token/quota limit exceeded")
-                    else:
-                        raise
+                    try:
+                        response = await chat.send_message_async(question)
+                        
+                        if hasattr(response, 'usage_metadata'):
+                            total_tokens += response.usage_metadata.prompt_token_count
+                            total_tokens += response.usage_metadata.candidates_token_count
+                        
+                        answer = response.text
+                        self.logger.info(f"Answer {i+1}: {answer[:200]}...")
+                        
+                        log_file.write(f"USER (Q{i+1}): {question}\n\n")
+                        log_file.write(f"ASSISTANT: {answer}\n\n")
+                        log_file.write(f"Tokens used: {total_tokens:,} / {self.max_tokens:,}\n")
+                        log_file.write("=" * 80 + "\n\n")
+                        
+                        evaluation_qa.append({
+                            "turn": i + 1,
+                            "question": question,
+                            "answer": answer
+                        })
+                        
+                    except Exception as e:
+                        self.logger.error(f"Question {i+1} failed: {e}")
+                        if "token limit" in str(e).lower() or "quota" in str(e).lower():
+                            self.logger.warning("Cannot continue - token/quota limit exceeded")
+                            break
+                        else:
+                            raise
+                
+                # Store in stats
+                stats["evaluation_qa"] = evaluation_qa
+                self.logger.info(f"Stored {len(evaluation_qa)} Q&A pairs in stats")
+                
+                milestones.append("evaluation_complete")
                 
                 milestones.append("session_complete")
         

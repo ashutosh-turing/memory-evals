@@ -306,37 +306,63 @@ class ClaudeAgent(AgentAdapter):
                     else:
                         raise
                 
-                # Phase 5: Evaluator questions
+                # Phase 5: Evaluator questions - PARSE INDIVIDUAL Q&A
                 self.logger.info("=" * 80)
                 self.logger.info("PHASE 5: Evaluator Questions")
                 self.logger.info("=" * 80)
                 
-                messages.append({"role": "user", "content": session.prompts["evaluator_set"]})
+                # Define evaluation questions
+                eval_questions = [
+                    "What is the main purpose of this PR?",
+                    "List the key files that were changed and their roles.",
+                    "How would you implement a similar feature?",
+                    "What are the long-term implications of this approach?"
+                ]
                 
-                try:
-                    response = client.messages.create(
-                        model=self.model,
-                        max_tokens=4096,
-                        messages=messages
-                    )
+                # Ask each question and collect answers
+                evaluation_qa = []
+                for i, question in enumerate(eval_questions):
+                    self.logger.info(f"Question {i+1}: {question}")
                     
-                    total_tokens += response.usage.input_tokens + response.usage.output_tokens
-                    messages.append({"role": "assistant", "content": response.content[0].text})
-                    responses.append({"phase": "evaluation", "response": response.content[0].text})
+                    messages.append({"role": "user", "content": question})
                     
-                    log_file.write(f"USER (Evaluation): {session.prompts['evaluator_set']}\n\n")
-                    log_file.write(f"ASSISTANT: {response.content[0].text}\n\n")
-                    log_file.write(f"Tokens used: {total_tokens:,} / {self.max_tokens:,}\n")
-                    log_file.write("=" * 80 + "\n\n")
-                    
-                    milestones.append("evaluation_complete")
-                    
-                except Exception as e:
-                    self.logger.error(f"Evaluation phase failed: {e}")
-                    if "maximum context length" in str(e).lower():
-                        self.logger.warning("Cannot continue - context limit exceeded")
-                    else:
-                        raise
+                    try:
+                        response = client.messages.create(
+                            model=self.model,
+                            max_tokens=500,
+                            messages=messages
+                        )
+                        
+                        answer = response.content[0].text
+                        total_tokens += response.usage.input_tokens + response.usage.output_tokens
+                        messages.append({"role": "assistant", "content": answer})
+                        
+                        self.logger.info(f"Answer {i+1}: {answer[:200]}...")
+                        
+                        log_file.write(f"USER (Q{i+1}): {question}\n\n")
+                        log_file.write(f"ASSISTANT: {answer}\n\n")
+                        log_file.write(f"Tokens used: {total_tokens:,} / {self.max_tokens:,}\n")
+                        log_file.write("=" * 80 + "\n\n")
+                        
+                        evaluation_qa.append({
+                            "turn": i + 1,
+                            "question": question,
+                            "answer": answer
+                        })
+                        
+                    except Exception as e:
+                        self.logger.error(f"Question {i+1} failed: {e}")
+                        if "maximum context length" in str(e).lower():
+                            self.logger.warning("Cannot continue - context limit exceeded")
+                            break
+                        else:
+                            raise
+                
+                # Store in stats
+                stats["evaluation_qa"] = evaluation_qa
+                self.logger.info(f"Stored {len(evaluation_qa)} Q&A pairs in stats")
+                
+                milestones.append("evaluation_complete")
                 
                 milestones.append("session_complete")
         

@@ -309,10 +309,15 @@ class IFlowAgent(AgentAdapter):
                     self.logger.info("=" * 80)
                     
                     deep_dive_count = 0
+                    prev_tokens = 0
+                    detection_method = "none"
                     
                     while deep_dive_count < self.max_turns:
                         deep_dive_count += 1
                         self.logger.info(f"Deep-dive iteration #{deep_dive_count}")
+                        
+                        # Store previous token count for jump detection
+                        prev_tokens = total_tokens_estimate
                         
                         deep_result = await self._send_and_collect(
                             client, session.prompts.get("deep") or session.prompts.get("deepdive", ""), log_file, session_logger, timeout=300
@@ -332,16 +337,35 @@ class IFlowAgent(AgentAdapter):
                             f"Tokens: {total_tokens_estimate:,} ({total_tokens_estimate/self.max_tokens*100:.1f}%)"
                         )
                         
-                        # Check if we hit token limit (reported by iFlow SDK)
+                        # Method 1: Token jump detection (compression occurred)
+                        # If tokens suddenly drop by 30% or more, compression likely happened
+                        if prev_tokens > 0 and total_tokens_estimate < prev_tokens * 0.7:
+                            self.logger.info(f"🔴 Token jump detected: {prev_tokens:,} → {total_tokens_estimate:,} (compression occurred!)")
+                            compression_detected = True
+                            detection_method = "token_jump"
+                            break
+                        
+                        # Method 2: Response analysis - check for compression indicators
+                        response_text = deep_result.get("response", "").lower()
+                        compression_keywords = ["memory", "compressed", "summarized", "context window", "token limit"]
+                        if any(keyword in response_text for keyword in compression_keywords):
+                            self.logger.info(f"🔴 Compression indicator detected in response (keywords: {compression_keywords})")
+                            compression_detected = True
+                            detection_method = "response_analysis"
+                            break
+                        
+                        # Method 3: Hit limit flag (existing - from iFlow SDK)
                         if hit_limit:
                             self.logger.info("🔴 Token limit reached - iFlow will compress context on next interaction")
                             compression_detected = True
+                            detection_method = "token_limit_flag"
                             break
                         
-                        # FALLBACK: Check if our estimate exceeds limit (even if iFlow doesn't report it)
+                        # Method 4: FALLBACK - Check if our estimate exceeds limit
                         if total_tokens_estimate >= self.max_tokens:
                             self.logger.info(f"🔴 Token estimate exceeded limit ({total_tokens_estimate:,} >= {self.max_tokens:,}) - proceeding to memory-only evaluation")
                             compression_detected = True
+                            detection_method = "token_estimate_exceeded"
                             break
                         
                         # Check if approaching limit (90% of max)
@@ -362,15 +386,42 @@ class IFlowAgent(AgentAdapter):
                     responses.append({"phase": "memory_only", **memory_result})
                     milestones.append("memory_only")
                     
-                    # Phase 5: Evaluator questions
+                    # Phase 5: Evaluator questions - PARSE INDIVIDUAL Q&A
                     self.logger.info("=" * 80)
                     self.logger.info("PHASE 5: Evaluator Questions")
                     self.logger.info("=" * 80)
                     
-                    eval_result = await self._send_and_collect(
-                        client, session.prompts.get("eval") or session.prompts.get("evaluator_set", ""), log_file, session_logger, timeout=300
-                    )
-                    responses.append({"phase": "evaluation", **eval_result})
+                    # Define evaluation questions
+                    eval_questions = [
+                        "What is the main purpose of this PR?",
+                        "List the key files that were changed and their roles.",
+                        "How would you implement a similar feature?",
+                        "What are the long-term implications of this approach?"
+                    ]
+                    
+                    # Ask each question and collect answers
+                    evaluation_qa = []
+                    for i, question in enumerate(eval_questions):
+                        self.logger.info(f"Question {i+1}: {question}")
+                        
+                        # Send question to agent
+                        qa_result = await self._send_and_collect(
+                            client, question, log_file, session_logger, timeout=60
+                        )
+                        
+                        answer = qa_result["response"]
+                        self.logger.info(f"Answer {i+1}: {answer[:200]}...")
+                        
+                        evaluation_qa.append({
+                            "turn": i + 1,
+                            "question": question,
+                            "answer": answer
+                        })
+                    
+                    # Store in stats
+                    stats["evaluation_qa"] = evaluation_qa
+                    self.logger.info(f"Stored {len(evaluation_qa)} Q&A pairs in stats")
+                    
                     milestones.append("evaluation_complete")
                     
                     milestones.append("session_complete")
@@ -383,7 +434,7 @@ class IFlowAgent(AgentAdapter):
         stats.update({
             "compression_detected": str(compression_detected),
             "total_tokens_estimate": str(total_tokens_estimate),
-            "detection_method": "token_limit_based",
+            "detection_method": detection_method,
             "max_tokens_configured": str(self.max_tokens),
         })
         

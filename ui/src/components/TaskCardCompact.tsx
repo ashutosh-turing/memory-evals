@@ -3,12 +3,13 @@ import {
   Clock, 
   CheckCircle2, 
   XCircle, 
-  Loader2, 
+  Loader2,
+  Activity,
   ExternalLink,
   User,
   Calendar
 } from 'lucide-react'
-import { formatDistanceToNow } from 'date-fns'
+import { formatDistanceToNow, parseISO } from 'date-fns'
 
 interface Task {
   id: string
@@ -43,12 +44,34 @@ export const TaskCardCompact = ({ task }: TaskCardCompactProps) => {
       label: 'Running',
       animate: 'animate-spin',
     },
+    judging: {
+      icon: Activity,
+      color: 'text-purple-600 dark:text-purple-400',
+      bg: 'bg-purple-50 dark:bg-purple-900/20',
+      border: 'border-l-purple-500',
+      label: 'Judging',
+      animate: 'animate-pulse',
+    },
+    done: {
+      icon: CheckCircle2,
+      color: 'text-success-600 dark:text-success-400',
+      bg: 'bg-success-50 dark:bg-success-900/20',
+      border: 'border-l-success-500',
+      label: 'Completed',
+    },
     completed: {
       icon: CheckCircle2,
       color: 'text-success-600 dark:text-success-400',
       bg: 'bg-success-50 dark:bg-success-900/20',
       border: 'border-l-success-500',
       label: 'Completed',
+    },
+    error: {
+      icon: XCircle,
+      color: 'text-error-600 dark:text-error-400',
+      bg: 'bg-error-50 dark:bg-error-900/20',
+      border: 'border-l-error-500',
+      label: 'Failed',
     },
     failed: {
       icon: XCircle,
@@ -85,7 +108,7 @@ export const TaskCardCompact = ({ task }: TaskCardCompactProps) => {
           <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
             <Calendar className="w-3 h-3" />
             <span>
-              {formatDistanceToNow(new Date(task.created_at), { addSuffix: true })}
+              {formatDistanceToNow(parseISO(task.created_at), { addSuffix: true })}
             </span>
             {task.created_by_name && (
               <>

@@ -14,7 +14,7 @@ import traceback
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from uuid import UUID
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 import queue
 
 from sqlmodel import Session
@@ -32,6 +32,111 @@ from app.agents.registry import get_agent_registry
 from app.agents.base import AgentSession
 
 logger = logging.getLogger(__name__)
+def run_agent_process(task_id: str, agent_type: str, task_data: Dict) -> Dict[str, str]:
+    """Run a single agent in a separate process and return its result dict."""
+    import time
+    from uuid import UUID
+    from pathlib import Path
+    from sqlmodel import Session
+    from app.infrastructure.database import engine, DatabaseManager
+    from app.domain.entities import AgentName, AgentRunStatus, RubricDimension
+    from app.agents.registry import get_agent_registry, initialize_agent_registry
+    from app.config import settings
+    
+    # Ensure registry is initialized in subprocess
+    try:
+        initialize_agent_registry()
+    except Exception:
+        pass
+    
+    try:
+        start_time = time.time()
+        # Resolve agent enum robustly
+        def coerce_agent_enum(agent_str: str) -> AgentName:
+            try:
+                return AgentName(agent_str)
+            except Exception:
+                pass
+            try:
+                return AgentName[agent_str.upper()]
+            except Exception:
+                pass
+            for member in AgentName:
+                if str(member.value).lower() == agent_str.lower() or member.name.lower() == agent_str.lower():
+                    return member
+            raise ValueError(f"Unknown agent: {agent_str}")
+        
+        agent_name = coerce_agent_enum(agent_type)
+        agent_registry = get_agent_registry()
+        agent = agent_registry.get_agent(agent_name)
+        
+        # Update agent run status to RUNNING in database
+        with Session(engine) as db_session:
+            db = DatabaseManager(db_session)
+            agent_runs = db.get_agent_runs_for_task(UUID(task_id))
+            agent_run = next((r for r in agent_runs if (r.agent.value if hasattr(r.agent, 'value') else r.agent) == agent_name.value), None)
+            if agent_run:
+                db.update_agent_run(agent_run.id, {"status": AgentRunStatus.RUNNING})
+        
+        # Prepare session-like object
+        repo_dir = Path(task_data['pr_result']['repo_path'])
+        agent_dir = Path(settings.run_root) / task_id / "agents" / agent_name.value.lower()
+        agent_dir.mkdir(parents=True, exist_ok=True)
+        
+        session = type('AgentSession', (), {
+            'task_id': UUID(task_id),
+            'agent_run_id': UUID(task_data.get('agent_run_id', task_id)),
+            'repo_dir': repo_dir,
+            'output_dir': agent_dir,
+            'prompts': task_data.get('prompts', {}),
+            'timeout': settings.agent_session_timeout
+        })()
+        
+        # Run the agent
+        result = agent.run_session(session)
+        exec_time = time.time() - start_time
+        
+        # Persist results
+        with Session(engine) as db_session:
+            db = DatabaseManager(db_session)
+            agent_runs = db.get_agent_runs_for_task(UUID(task_id))
+            agent_run = next((r for r in agent_runs if (r.agent.value if hasattr(r.agent, 'value') else r.agent) == agent_name.value), None)
+            if result.get("artifacts"):
+                if agent_run:
+                    db.update_agent_run(agent_run.id, {
+                        "status": AgentRunStatus.DONE,
+                        "artifacts": result.get("artifacts", {}),
+                        "stats": result.get("stats", {}),
+                        "milestones": {f"milestone_{i}": m for i, m in enumerate(result.get("milestones", []))}
+                    })
+                return {
+                    "status": "success",
+                    "execution_time": exec_time,
+                    "artifacts": result.get("artifacts", {}),
+                    "stats": result.get("stats", {}),
+                    "milestones": result.get("milestones", []),
+                    "compression_detected": result.get("compression_detected", False),
+                }
+            else:
+                if agent_run:
+                    db.update_agent_run(agent_run.id, {
+                        "status": AgentRunStatus.ERROR,
+                        "error_message": result.get("error", "Agent execution failed")
+                    })
+                return {"status": "failed", "error": result.get("error", "Agent execution failed")}
+    except Exception as e:
+        # On error, persist in DB if possible
+        try:
+            with Session(engine) as db_session:
+                db = DatabaseManager(db_session)
+                agent_runs = db.get_agent_runs_for_task(UUID(task_id))
+                agent_run = next((r for r in agent_runs if (r.agent.value if hasattr(r.agent, 'value') else r.agent) == agent_type), None)
+                if agent_run:
+                    db.update_agent_run(agent_run.id, {"status": AgentRunStatus.ERROR, "error_message": str(e)})
+        except Exception:
+            pass
+        return {"status": "failed", "error": str(e)}
+
 
 class SimpleTaskQueue:
     """Simple in-memory task queue using Python's queue module."""
@@ -279,7 +384,7 @@ class SimpleWorker:
         prompts: Dict[str, str], 
         db: DatabaseManager
     ) -> Dict[str, Dict]:
-        """Process agents in parallel using ThreadPoolExecutor."""
+        """Process agents in parallel using dual executor pattern for true parallelism."""
         
         agent_results = {}
         
@@ -297,11 +402,13 @@ class SimpleWorker:
             }
         }
         
-        # Process agents in parallel
-        futures = {}
-        
-        with ThreadPoolExecutor(max_workers=len(task_db.agents)) as executor:
-            # Submit all agents for parallel execution
+        # Dual executor pattern: one for agents (processes), one for judging (threads)
+        # This ensures true parallelism - agents run in parallel AND judging happens in parallel
+        with ProcessPoolExecutor(max_workers=len(task_db.agents)) as agent_executor, \
+             ThreadPoolExecutor(max_workers=len(task_db.agents)) as judge_executor:
+            
+            # Phase 1: Submit all agents for parallel execution
+            agent_futures = {}
             for agent_name_str in task_db.agents:
                 try:
                     agent_name = AgentName(agent_name_str)
@@ -320,24 +427,20 @@ class SimpleWorker:
                         "agent_name": agent_name.value
                     }
                     
-                    # Submit agent to run in parallel
-                    future = executor.submit(
-                        self._run_agent_container,
-                        task_id, 
-                        agent_name.value, 
-                        agent_task_data
-                    )
-                    futures[future] = agent_name.value
+                    # Submit agent to run in a separate process
+                    future = agent_executor.submit(run_agent_process, task_id, agent_name.value, agent_task_data)
+                    agent_futures[future] = agent_name.value
                     
                 except Exception as e:
                     logger.error(f"Failed to submit agent {agent_name_str}: {e}")
                     agent_results[agent_name_str] = {"status": "failed", "error": str(e)}
             
-            # Wait for all agents to complete and collect results
-            logger.info(f"Waiting for {len(futures)} agents to complete in parallel...")
+            logger.info(f"Waiting for {len(agent_futures)} agents to complete in parallel...")
             
-            for future in as_completed(futures):
-                agent_name = futures[future]
+            # Phase 2: As each agent completes, immediately submit judging (non-blocking)
+            judge_futures = {}
+            for future in as_completed(agent_futures):
+                agent_name = agent_futures[future]
                 try:
                     result = future.result()
                     agent_results[agent_name] = result
@@ -355,14 +458,14 @@ class SimpleWorker:
                             f'{agent_name} evaluation completed successfully'
                         ))
                         
-                        # IMMEDIATE JUDGING: Judge this agent right away
-                        try:
-                            from app.services.judge_service import get_judge_service
-                            judge_service = get_judge_service()
-                            logger.info(f"Starting immediate judging for {agent_name}")
-                            self._judge_single_agent(task_id, agent_name, db, judge_service)
-                        except Exception as judge_error:
-                            logger.error(f"Failed to judge {agent_name} immediately: {judge_error}")
+                        # Submit judging to separate thread pool (NON-BLOCKING!)
+                        # This allows other agents to be judged in parallel
+                        logger.info(f"Submitting {agent_name} for parallel judging")
+                        judge_future = judge_executor.submit(
+                            self._judge_single_agent_wrapper,
+                            task_id, agent_name, db
+                        )
+                        judge_futures[judge_future] = agent_name
                     else:
                         error_msg = result.get("error", "Unknown error")
                         asyncio.run(self.task_logger.log_task_event(
@@ -373,8 +476,29 @@ class SimpleWorker:
                 except Exception as e:
                     logger.error(f"Failed to process agent {agent_name}: {e}")
                     agent_results[agent_name] = {"status": "failed", "error": str(e)}
+            
+            # Phase 3: Wait for all judging to complete
+            logger.info(f"Waiting for {len(judge_futures)} agents to be judged in parallel...")
+            for judge_future in as_completed(judge_futures):
+                agent_name = judge_futures[judge_future]
+                try:
+                    judge_result = judge_future.result()
+                    logger.info(f"Judging completed for {agent_name}: {judge_result}")
+                except Exception as e:
+                    logger.error(f"Failed to judge {agent_name}: {e}")
         
         return agent_results
+    
+    def _judge_single_agent_wrapper(self, task_id: str, agent_name: str, db: DatabaseManager):
+        """Wrapper for judging a single agent - used by thread pool executor."""
+        try:
+            from app.services.judge_service import get_judge_service
+            judge_service = get_judge_service()
+            logger.info(f"Starting judging for {agent_name}")
+            return self._judge_single_agent(task_id, agent_name, db, judge_service)
+        except Exception as e:
+            logger.error(f"Failed to judge {agent_name}: {e}", exc_info=True)
+            raise
     
     def _coerce_agent_enum(self, agent_str: str) -> AgentName:
         """Convert arbitrary agent string to AgentName enum, case-insensitive and by name/value."""
@@ -578,6 +702,21 @@ class SimpleWorker:
                     # Extract evaluation data from agent run artifacts
                     from app.config import settings
                     questions, pre_answers, post_answers = self._extract_evaluation_data(agent_run)
+                    
+                    # Store Q&A interactions in database
+                    if questions and post_answers:
+                        qa_interactions = []
+                        for i, (q, a) in enumerate(zip(questions, post_answers)):
+                            qa_interactions.append({
+                                "turn": i + 1,
+                                "question": q,
+                                "answer": a,
+                                "ground_truth": pre_answers[i] if i < len(pre_answers) else None
+                            })
+                        
+                        # Update agent_run with Q&A interactions
+                        db.update_agent_run(agent_run.id, {"qa_interactions": qa_interactions})
+                        logger.info(f"Stored {len(qa_interactions)} Q&A interactions for {agent_name}")
                     
                     if questions and post_answers:
                         # Use LLM judge
@@ -827,88 +966,28 @@ class SimpleWorker:
         return scores, overall_score, passed, rationale
     
     def _extract_evaluation_data(self, agent_run) -> tuple:
-        """
-        Extract evaluation questions and answers from agent run artifacts.
+        """Extract real evaluation Q&A from agent run."""
         
-        Returns:
-            Tuple of (questions, pre_answers, post_answers)
-        """
-        # Check if we have evaluation artifacts
-        artifacts = agent_run.artifacts or {}
+        stats = agent_run.stats or {}
         
-        # Look for evaluation-related artifacts
-        if "evaluation_transcript" in artifacts or "evaluation_results" in artifacts:
-            # Parse the evaluation transcript to extract Q&A pairs
-            # Implementation would parse actual transcript files here
-            pass
+        # Check for real Q&A data
+        if "evaluation_qa" in stats:
+            logger.info(f"Using REAL Q&A from agent execution")
+            evaluation_qa = stats["evaluation_qa"]
+            
+            questions = [qa["question"] for qa in evaluation_qa]
+            post_answers = [qa["answer"] for qa in evaluation_qa]
+            
+            # Pre-answers: empty for now (we only have post-compression answers)
+            pre_answers = [""] * len(questions)
+            
+            logger.info(f"Extracted {len(questions)} real Q&A pairs")
+            return questions, pre_answers, post_answers
         
-        # Get agent name for differentiated responses
+        # Fallback: No real Q&A available
         agent_name = self._get_agent_name(agent_run)
-        
-        # Standard evaluation questions for memory-break assessment
-        questions = [
-            "What is the main purpose of this PR?",
-            "List the key files that were changed and their roles.",
-            "How would you implement a similar feature?",
-            "What are the long-term implications of this approach?"
-        ]
-        
-        # Agent-specific simulated responses based on their characteristics
-        if agent_name == "claude":
-            pre_answers = [
-                "This PR implements comprehensive form state management improvements with detailed analysis of package.json and useForm.ts modifications.",
-                "The key files include package.json for dependency updates, src/useForm.ts for core form logic, and createFormControl.ts for state management.",
-                "I would implement this using a similar hook-based approach with careful attention to TypeScript types and performance optimization.",
-                "This approach ensures better maintainability and provides a solid foundation for future form handling enhancements."
-            ]
-            post_answers = [
-                "The PR focuses on form state management improvements with some dependency changes.",
-                "Several files were modified including package.json and core form handling files.",
-                "A similar implementation would use React hooks with proper state management patterns.",
-                "The long-term benefits include improved developer experience and better form performance."
-            ]
-        elif agent_name == "gemini":
-            pre_answers = [
-                "The PR introduces form state optimizations and dependency updates, particularly focusing on lint-staged and development workflow improvements.",
-                "Modified files include package.json for tooling updates, useForm.ts for form logic enhancements, and related TypeScript definitions.",
-                "Implementation would leverage modern React patterns with emphasis on type safety and performance considerations.",
-                "This approach supports scalable form management with improved developer tooling and better code quality enforcement."
-            ]
-            post_answers = [
-                "The PR updates form handling with some development tool improvements.",
-                "Changes span configuration files and core form components with focus on state management.",
-                "Implementation approach would emphasize React best practices and TypeScript integration.",
-                "Benefits include enhanced development workflow and more robust form handling capabilities."
-            ]
-        elif agent_name == "iflow":
-            pre_answers = [
-                "This PR addresses form state management with specific focus on useForm hook improvements and development dependency updates for better code quality.",
-                "Key modifications in package.json for lint-staged configuration, useForm.ts for enhanced form state handling, and createFormControl.ts for improved control logic.",
-                "Implementation strategy would involve careful refactoring of existing form patterns while maintaining backward compatibility and adding new features.",
-                "Long-term implications include better code maintainability, improved developer experience, and more robust form validation and state management."
-            ]
-            post_answers = [
-                "The PR enhances form state management with development tooling improvements.",
-                "Multiple files updated including configuration and core form handling components.",
-                "Implementation would focus on maintaining existing patterns while adding improvements.",
-                "Expected benefits include better code quality and enhanced form functionality."
-            ]
-        else:
-            # Default responses for unknown agents
-            pre_answers = [
-                "The PR implements feature improvements with configuration and code changes.",
-                "Files modified include package.json and core application files.",
-                "Implementation would follow standard patterns with proper error handling.",
-                "This approach provides good maintainability and extensibility."
-            ]
-            post_answers = [
-                "The PR adds functionality with some configuration updates.",
-                "Several files were modified including core components.",
-                "Implementation would focus on standard best practices.",
-                "Benefits include improved functionality and maintainability."
-            ]
-        
-        return questions, pre_answers, post_answers
+        logger.warning(f"No real Q&A found in agent stats for {agent_name} - cannot judge properly")
+        raise ValueError(f"Agent {agent_name} has no evaluation_qa data")
 
 
 # Global simple task queue instance

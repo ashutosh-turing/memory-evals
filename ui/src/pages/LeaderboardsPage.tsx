@@ -1,13 +1,35 @@
-import { useState } from 'react'
-import { Trophy, TrendingUp, Medal, Star, Filter, Search } from 'lucide-react'
+import { Trophy, Medal, Star } from 'lucide-react'
 import { Sidebar, Header, Loading } from '../components'
 import { useTasks } from '../hooks/useTasks'
+import { useQuery } from '@tanstack/react-query'
+import { apiClient } from '../api/client'
 
 export const LeaderboardsPage = () => {
-  const [searchQuery, setSearchQuery] = useState('')
+  // Leaderboard is public - always show all tasks
   const { data: tasksData, isLoading } = useTasks({ page: 1, page_size: 100, filter: 'all' })
+  
+  // Fetch leaderboard data for all done tasks
+  const taskIds = tasksData?.tasks?.filter(t => t.status === 'done').map(t => t.id) || []
+  const { data: leaderboardsData } = useQuery({
+    queryKey: ['leaderboards', taskIds],
+    queryFn: async () => {
+      const results = await Promise.all(
+        taskIds.map(async (taskId) => {
+          try {
+            const data = await apiClient.getLeaderboard(taskId)
+            return { taskId, data }
+          } catch (error) {
+            console.error(`Failed to fetch leaderboard for task ${taskId}:`, error)
+            return null
+          }
+        })
+      )
+      return results.filter(r => r !== null)
+    },
+    enabled: taskIds.length > 0
+  })
 
-  // Calculate agent statistics from completed tasks
+  // Calculate agent statistics from completed tasks with real scores
   const calculateLeaderboard = () => {
     if (!tasksData?.tasks) return []
 
@@ -19,37 +41,56 @@ export const LeaderboardsPage = () => {
       avgScore: number
       totalScore: number
       scoreCount: number
+      dimensionScores: Record<string, { total: number, count: number }>
     }> = {}
 
     tasksData.tasks.forEach(task => {
-      if (task.status === 'done' || task.status === 'error') {
-        task.agents.forEach(agent => {
-          if (!agentStats[agent]) {
-            agentStats[agent] = {
-              name: agent,
-              totalTasks: 0,
-              completedTasks: 0,
-              failedTasks: 0,
-              avgScore: 0,
-              totalScore: 0,
-              scoreCount: 0
+      task.agents.forEach(agent => {
+        if (!agentStats[agent]) {
+          agentStats[agent] = {
+            name: agent,
+            totalTasks: 0,
+            completedTasks: 0,
+            failedTasks: 0,
+            avgScore: 0,
+            totalScore: 0,
+            scoreCount: 0,
+            dimensionScores: {}
+          }
+        }
+        
+        agentStats[agent].totalTasks++
+        
+        if (task.status === 'done') {
+          agentStats[agent].completedTasks++
+          
+          // Find real scores from leaderboard data
+          const taskLeaderboard = leaderboardsData?.find(lb => lb.taskId === task.id)
+          if (taskLeaderboard) {
+            const agentEntry = taskLeaderboard.data.leaderboard.find(
+              (entry: any) => entry.agent === agent
+            )
+            if (agentEntry && agentEntry.overall_score !== undefined) {
+              agentStats[agent].totalScore += agentEntry.overall_score
+              agentStats[agent].scoreCount++
+              
+              // Collect dimension scores
+              if (agentEntry.dimension_scores) {
+                Object.entries(agentEntry.dimension_scores).forEach(([dim, score]) => {
+                  if (!agentStats[agent].dimensionScores[dim]) {
+                    agentStats[agent].dimensionScores[dim] = { total: 0, count: 0 }
+                  }
+                  agentStats[agent].dimensionScores[dim].total += score as number
+                  agentStats[agent].dimensionScores[dim].count++
+                })
+              }
             }
           }
-          
-          agentStats[agent].totalTasks++
-          
-          if (task.status === 'done') {
-            agentStats[agent].completedTasks++
-            // In a real implementation, you'd fetch scores from the leaderboard API
-            // For now, we'll use mock data
-            const mockScore = 0.75 + Math.random() * 0.25
-            agentStats[agent].totalScore += mockScore
-            agentStats[agent].scoreCount++
-          } else {
-            agentStats[agent].failedTasks++
-          }
-        })
-      }
+        } else if (task.status === 'error') {
+          agentStats[agent].failedTasks++
+        }
+        // Running/queued tasks are counted in totalTasks but not in completed/failed
+      })
     })
 
     // Calculate averages and sort
@@ -57,7 +98,11 @@ export const LeaderboardsPage = () => {
       .map(stat => ({
         ...stat,
         avgScore: stat.scoreCount > 0 ? stat.totalScore / stat.scoreCount : 0,
-        successRate: stat.totalTasks > 0 ? (stat.completedTasks / stat.totalTasks) * 100 : 0
+        successRate: stat.totalTasks > 0 ? (stat.completedTasks / stat.totalTasks) * 100 : 0,
+        avgDimensionScores: Object.entries(stat.dimensionScores).reduce((acc, [dim, data]) => {
+          acc[dim] = data.count > 0 ? data.total / data.count : 0
+          return acc
+        }, {} as Record<string, number>)
       }))
       .sort((a, b) => b.avgScore - a.avgScore)
   }
@@ -102,7 +147,7 @@ export const LeaderboardsPage = () => {
                     Agent Leaderboards
                   </h1>
                   <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-                    Compare agent performance across all evaluations
+                    Compare agent performance across evaluations you can access
                   </p>
                 </div>
               </div>
@@ -111,7 +156,7 @@ export const LeaderboardsPage = () => {
         </div>
 
         {/* Content */}
-        <main className="flex-1 overflow-y-auto p-6">
+        <main className="flex-1 overflow-y-auto p-6 max-w-full">
           {isLoading ? (
             <Loading />
           ) : leaderboard.length === 0 ? (
@@ -128,9 +173,9 @@ export const LeaderboardsPage = () => {
             <div className="space-y-6">
               {/* Top 3 Podium */}
               {leaderboard.length >= 3 && (
-                <div className="grid grid-cols-3 gap-4 mb-8">
+                <div className="grid grid-cols-3 gap-4 mb-12">
                   {/* 2nd Place */}
-                  <div className="card p-6 text-center transform translate-y-8">
+                  <div className="card p-6 text-center">
                     <Medal className="w-12 h-12 text-gray-400 mx-auto mb-3" />
                     <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-1">
                       {leaderboard[1].name}
@@ -161,7 +206,7 @@ export const LeaderboardsPage = () => {
                   </div>
 
                   {/* 3rd Place */}
-                  <div className="card p-6 text-center transform translate-y-12">
+                  <div className="card p-6 text-center">
                     <Medal className="w-10 h-10 text-amber-600 mx-auto mb-3" />
                     <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-1">
                       {leaderboard[2].name}
@@ -177,9 +222,9 @@ export const LeaderboardsPage = () => {
               )}
 
               {/* Full Leaderboard Table */}
-              <div className="card">
+              <div className="w-full bg-white dark:bg-dark-900 rounded-lg shadow">
                 <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-800">
+                  <table className="w-full divide-y divide-gray-200 dark:divide-gray-800">
                     <thead className="bg-gray-50 dark:bg-dark-800">
                       <tr>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">

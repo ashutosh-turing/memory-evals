@@ -11,6 +11,7 @@ export interface UserContext {
   project_id?: string
   project_name?: string
   user_role: 'super_admin' | 'org_admin' | 'team_admin' | 'member' | 'viewer'
+  global_role?: 'super_admin' | 'org_admin' | 'team_admin' | 'member' | 'viewer'
 }
 
 // Task Types
@@ -90,6 +91,7 @@ export interface LeaderboardEntry {
   status: AgentRunStatus
   overall_score: number
   scores: Score
+  dimension_scores?: Record<string, number>
   passed: boolean
   execution_time: number
   compression_detected: boolean

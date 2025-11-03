@@ -1,11 +1,11 @@
-import { formatDistanceToNow, format } from 'date-fns'
+import { formatDistanceToNow, format, parseISO } from 'date-fns'
 
 /**
  * Format a date string to relative time (e.g., "2 hours ago")
  */
 export const formatRelativeTime = (dateString: string): string => {
   try {
-    return formatDistanceToNow(new Date(dateString), { addSuffix: true })
+    return formatDistanceToNow(parseISO(dateString), { addSuffix: true })
   } catch {
     return 'Unknown'
   }
@@ -16,7 +16,7 @@ export const formatRelativeTime = (dateString: string): string => {
  */
 export const formatDate = (dateString: string, formatStr: string = 'PPpp'): string => {
   try {
-    return format(new Date(dateString), formatStr)
+    return format(parseISO(dateString), formatStr)
   } catch {
     return 'Invalid date'
   }

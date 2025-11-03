@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, HttpUrl
@@ -114,6 +114,7 @@ class AgentRun(BaseModel):
     # Artifacts and outputs
     artifacts: Dict[str, str] = Field(default_factory=dict)  # name -> file path
     stats: Dict[str, str] = Field(default_factory=dict)  # execution statistics
+    qa_interactions: List[Dict[str, Any]] = Field(default_factory=list)  # turn-by-turn Q&A
     
     # Timestamps
     created_at: datetime = Field(default_factory=datetime.utcnow)
@@ -138,6 +139,18 @@ class AgentRun(BaseModel):
     def add_stat(self, key: str, value: str) -> None:
         """Add execution statistic."""
         self.stats[key] = value
+        self.updated_at = datetime.utcnow()
+    
+    def add_qa_interaction(self, turn: int, question: str, answer: str, ground_truth: str = None) -> None:
+        """Add Q&A interaction."""
+        interaction = {
+            "turn": turn,
+            "question": question,
+            "answer": answer
+        }
+        if ground_truth:
+            interaction["ground_truth"] = ground_truth
+        self.qa_interactions.append(interaction)
         self.updated_at = datetime.utcnow()
     
     def mark_started(self) -> None:

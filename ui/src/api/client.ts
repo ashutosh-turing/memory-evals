@@ -98,6 +98,45 @@ class ApiClient {
     return response.data
   }
 
+  // Get detailed agent run with judge rationale
+  async getAgentDetails(taskId: string, agentName: string): Promise<{
+    agent_run: {
+      id: string
+      agent: string
+      status: string
+      error_message: string | null
+      stats: Record<string, any>
+      milestones: Record<string, any>
+      created_at: string
+      updated_at: string
+      started_at: string | null
+      completed_at: string | null
+    }
+    scores: {
+      overall_score: number
+      dimension_scores: Record<string, number>
+      rationale: string
+      breaking_dimensions: string[]
+      breaking_details: Record<string, string>
+      thresholds_used: Record<string, number>
+      passed: boolean
+      judge_type: string | null
+      judge_model: string | null
+    } | null
+  }> {
+    const response = await this.client.get(`/tasks/${taskId}/agents/${agentName}/details`)
+    return response.data
+  }
+
+  // Retry failed agents or entire task
+  async retryTask(taskId: string, agents?: string[]): Promise<{
+    status: string
+    message: string
+  }> {
+    const response = await this.client.post(`/tasks/${taskId}/retry`, { agents })
+    return response.data
+  }
+
   // Poll task logs with ETag caching
   async pollTaskLogs(taskId: string, etag?: string): Promise<{
     logs: any[]
@@ -145,6 +184,29 @@ class ApiClient {
 
   getBundleUrl(taskId: string): string {
     return `${this.baseUrl}/artifacts/${taskId}/bundle`
+  }
+
+  async downloadTaskJSONL(taskId: string): Promise<void> {
+    const token = localStorage.getItem('auth_token')
+    const response = await fetch(`${this.baseUrl}/artifacts/${taskId}/evaluation.jsonl`, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    
+    if (!response.ok) {
+      throw new Error(`Failed to download JSONL: ${response.statusText}`)
+    }
+    
+    const blob = await response.blob()
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${taskId}_evaluation.jsonl`
+    document.body.appendChild(a)
+    a.click()
+    window.URL.revokeObjectURL(url)
+    document.body.removeChild(a)
   }
 
   // Health check
