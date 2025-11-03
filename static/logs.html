@@ -13,7 +13,7 @@
                     colors: {
                         primary: {
                             50: '#f0f4ff',
-                            100: '#e5edff', 
+                            100: '#e5edff',
                             200: '#d1deff',
                             300: '#b3c5ff',
                             400: '#85a3ff',
@@ -72,7 +72,7 @@
                     </button>
                 </div>
             </div>
-            
+
             <!-- Task Info -->
             <div v-if="taskInfo" class="flex flex-wrap items-center gap-4 text-sm text-gray-600">
                 <span><strong>Task:</strong> {{ taskInfo.id.substring(0, 8) }}...</span>
@@ -81,7 +81,7 @@
                 <span><strong>Agents:</strong> {{ taskInfo.agents.join(', ') }}</span>
             </div>
         </div>
-        
+
         <!-- Filter Controls -->
         <div class="bg-white rounded-lg shadow-md p-4 mb-6">
             <div class="flex flex-wrap items-center gap-4">
@@ -94,7 +94,7 @@
                         <option value="ERROR">ERROR</option>
                     </select>
                 </div>
-                
+
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Event Type</label>
                     <select v-model="selectedEventType" class="px-3 py-1 border border-gray-300 rounded text-sm">
@@ -110,7 +110,7 @@
                         <option value="error">Errors</option>
                     </select>
                 </div>
-                
+
                 <div>
                     <label class="block text-sm font-medium text-gray-700 mb-1">Agent</label>
                     <select v-model="selectedAgent" class="px-3 py-1 border border-gray-300 rounded text-sm">
@@ -118,7 +118,7 @@
                         <option v-for="agent in availableAgents" :key="agent" :value="agent">{{ agent }}</option>
                     </select>
                 </div>
-                
+
                 <div class="flex items-end">
                     <button @click="toggleRawMode" :class="{
                         'bg-gray-800 text-white': rawMode,
@@ -129,7 +129,7 @@
                 </div>
             </div>
         </div>
-        
+
         <!-- Stats -->
         <div class="bg-white rounded-lg shadow-md p-4 mb-6">
             <div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-center">
@@ -151,14 +151,14 @@
                 </div>
             </div>
         </div>
-        
+
         <!-- Live Logs -->
         <div class="bg-white rounded-lg shadow-md overflow-hidden">
             <div class="bg-gray-800 text-white px-4 py-2 flex items-center justify-between">
                 <h3 class="font-medium">Live Execution Logs</h3>
                 <div class="text-sm">{{ logs.length }} entries</div>
             </div>
-            
+
             <div ref="logContainer" class="log-container overflow-y-auto bg-gray-900 text-green-400 font-mono text-sm">
                 <div v-if="logs.length === 0" class="p-8 text-center text-gray-400">
                     <div v-if="connectionStatus === 'connecting'">
@@ -172,20 +172,20 @@
                         <p>Connection lost. Attempting to reconnect...</p>
                     </div>
                 </div>
-                
+
                 <!-- Raw Mode -->
                 <div v-if="rawMode" class="p-4">
-                    <div v-for="(log, index) in logs" :key="index" 
+                    <div v-for="(log, index) in logs" :key="index"
                          class="log-entry mb-2 p-2 rounded" :class="{'new': log.isNew}">
                         <pre class="whitespace-pre-wrap">{{ JSON.stringify(log, null, 2) }}</pre>
                     </div>
                 </div>
-                
+
                 <!-- Structured Mode -->
                 <div v-else class="p-4 space-y-2">
-                    <div v-for="(log, index) in logs" :key="index" 
+                    <div v-for="(log, index) in logs" :key="index"
                          class="log-entry p-3 rounded border-l-4" :class="getLogEntryClass(log)" :style="getLogStyle(log)">
-                        
+
                         <!-- Log Header -->
                         <div class="flex items-center justify-between mb-2">
                             <div class="flex items-center space-x-2">
@@ -203,12 +203,12 @@
                                 </span>
                             </div>
                         </div>
-                        
+
                         <!-- Log Content -->
                         <div class="text-gray-100">
                             <!-- Main Message -->
                             <div v-if="log.message" class="mb-2 font-medium">{{ log.message }}</div>
-                            
+
                             <!-- Special Content Based on Type -->
                             <div v-if="log.type === 'prompt_generated'" class="space-y-2">
                                 <div><strong>Type:</strong> {{ log.prompt_type }}</div>
@@ -219,7 +219,7 @@
                                     <pre class="mt-2 p-2 bg-gray-800 rounded text-xs whitespace-pre-wrap">{{ log.prompt_content }}</pre>
                                 </details>
                             </div>
-                            
+
                             <div v-else-if="log.type === 'agent_interaction'" class="space-y-2">
                                 <div><strong>Interaction:</strong> {{ log.interaction_type }}</div>
                                 <div><strong>Content Length:</strong> {{ log.content_length }} characters</div>
@@ -228,33 +228,33 @@
                                     <pre class="mt-2 p-2 bg-gray-800 rounded text-xs whitespace-pre-wrap">{{ log.content }}</pre>
                                 </details>
                             </div>
-                            
+
                             <div v-else-if="log.type === 'compression_detected'" class="space-y-2">
                                 <div class="text-yellow-400 font-bold">🧠 MEMORY COMPRESSION DETECTED</div>
                                 <div><strong>Method:</strong> {{ log.detection_method }}</div>
                                 <div><strong>Before:</strong> {{ log.before_context }}</div>
                                 <div><strong>After:</strong> {{ log.after_context }}</div>
                             </div>
-                            
+
                             <div v-else-if="log.type === 'evaluation_qa'" class="space-y-2">
                                 <div><strong>Question {{ log.question_index + 1 }}:</strong></div>
                                 <div class="pl-4 italic text-blue-300">{{ log.question }}</div>
                                 <div><strong>Answer ({{ log.answer_length }} chars):</strong></div>
                                 <div class="pl-4 text-green-300">{{ log.answer }}</div>
                             </div>
-                            
+
                             <div v-else-if="log.type === 'progress_update'" class="space-y-2">
                                 <div class="flex items-center space-x-2">
                                     <div class="w-4 h-4 bg-blue-600 rounded-full animate-pulse"></div>
                                     <strong>{{ log.stage }}: {{ log.current_step }}</strong>
                                 </div>
                                 <div class="w-full bg-gray-700 rounded-full h-2">
-                                    <div class="bg-blue-600 h-2 rounded-full transition-all duration-300" 
+                                    <div class="bg-blue-600 h-2 rounded-full transition-all duration-300"
                                          :style="`width: ${log.progress_percent}%`"></div>
                                 </div>
                                 <div class="text-xs text-gray-400">{{ log.progress_percent }}% complete</div>
                             </div>
-                            
+
                             <div v-else-if="log.type === 'error'" class="space-y-2">
                                 <div class="text-red-400 font-bold">❌ {{ log.error_type }}</div>
                                 <div class="text-red-300">{{ log.error_message }}</div>
@@ -262,11 +262,11 @@
                                     {{ log.exception_type }}: {{ log.exception_details }}
                                 </div>
                             </div>
-                            
+
                             <!-- Generic key-value display for other log types -->
                             <div v-else class="space-y-1">
                                 <div v-for="(value, key) in getDisplayData(log)" :key="key" class="text-sm">
-                                    <strong class="text-gray-300">{{ formatKey(key) }}:</strong> 
+                                    <strong class="text-gray-300">{{ formatKey(key) }}:</strong>
                                     <span class="text-gray-100">{{ formatValue(value) }}</span>
                                 </div>
                             </div>
@@ -279,7 +279,7 @@
 
     <script>
         const { createApp } = Vue;
-        
+
         createApp({
             data() {
                 return {
@@ -299,7 +299,7 @@
                     connectionDuration: 0,
                 }
             },
-            
+
             computed: {
                 totalLogs() {
                     return this.logs.length;
@@ -308,23 +308,23 @@
                     return this.logs.filter(log => log.level === 'ERROR').length;
                 }
             },
-            
+
             mounted() {
                 // Get task ID from URL parameters
                 const params = new URLSearchParams(window.location.search);
                 this.taskId = params.get('taskId');
-                
+
                 if (!this.taskId) {
                     alert('No task ID provided');
                     return;
                 }
-                
+
                 this.loadTaskInfo();
                 this.connectToLogStream();
-                
+
                 // Initial filter call
                 this.filterLogs();
-                
+
                 // Update connection duration every second
                 setInterval(() => {
                     if (this.connectionStartTime) {
@@ -332,13 +332,13 @@
                     }
                 }, 1000);
             },
-            
+
             beforeUnmount() {
                 if (this.eventSource) {
                     this.eventSource.close();
                 }
             },
-            
+
             watch: {
                 selectedLogLevel() {
                     this.filterLogs();
@@ -353,7 +353,7 @@
                     this.filterLogs();
                 }
             },
-            
+
             methods: {
                 async loadTaskInfo() {
                     try {
@@ -364,28 +364,28 @@
                         console.error('Failed to load task info:', error);
                     }
                 },
-                
+
                 connectToLogStream() {
                     this.connectionStatus = 'connecting';
                     this.connectionStartTime = Date.now();
-                    
+
                     this.eventSource = new EventSource(`/api/v1/logs/${this.taskId}/stream`);
-                    
+
                     this.eventSource.onopen = () => {
                         this.connectionStatus = 'connected';
                     };
-                    
+
                     this.eventSource.onmessage = (event) => {
                         try {
                             const logData = JSON.parse(event.data);
                             logData.isNew = true;
                             this.logs.push(logData);
-                            
+
                             // Remove new flag after animation
                             setTimeout(() => {
                                 logData.isNew = false;
                             }, 2000);
-                            
+
                             if (this.autoScroll) {
                                 this.$nextTick(() => {
                                     this.scrollToBottom();
@@ -395,11 +395,11 @@
                             console.error('Failed to parse log data:', error);
                         }
                     };
-                    
+
                     this.eventSource.onerror = (error) => {
                         console.error('SSE error:', error);
                         this.connectionStatus = 'disconnected';
-                        
+
                         // Attempt to reconnect after 5 seconds
                         setTimeout(() => {
                             if (this.eventSource.readyState === EventSource.CLOSED) {
@@ -408,7 +408,7 @@
                         }, 5000);
                     };
                 },
-                
+
                 filterLogs() {
                     this.filteredLogs = this.logs.filter(log => {
                         if (this.selectedLogLevel && log.level !== this.selectedLogLevel) {
@@ -423,29 +423,29 @@
                         return true;
                     });
                 },
-                
+
                 toggleAutoScroll() {
                     this.autoScroll = !this.autoScroll;
                     if (this.autoScroll) {
                         this.scrollToBottom();
                     }
                 },
-                
+
                 toggleRawMode() {
                     this.rawMode = !this.rawMode;
                 },
-                
+
                 clearLogs() {
                     this.logs = [];
                     this.filteredLogs = [];
                 },
-                
+
                 scrollToBottom() {
                     if (this.$refs.logContainer) {
                         this.$refs.logContainer.scrollTop = this.$refs.logContainer.scrollHeight;
                     }
                 },
-                
+
                 getStatusClass(status) {
                     const classes = {
                         'queued': 'bg-yellow-100 text-yellow-800',
@@ -456,7 +456,7 @@
                     };
                     return classes[status] || 'bg-gray-100 text-gray-800';
                 },
-                
+
                 getLogEntryClass(log) {
                     const classes = ['border-gray-600'];
                     if (log.level === 'ERROR') classes.push('border-red-500 bg-red-900 bg-opacity-20');
@@ -465,14 +465,14 @@
                     else if (log.type === 'progress_update') classes.push('border-blue-500 bg-blue-900 bg-opacity-20');
                     return classes.join(' ');
                 },
-                
+
                 getLogStyle(log) {
                     if (log.isNew) {
                         return { backgroundColor: 'rgba(254, 243, 205, 0.1)' };
                     }
                     return {};
                 },
-                
+
                 getLevelClass(level) {
                     const classes = {
                         'INFO': 'text-green-400',
@@ -481,15 +481,15 @@
                     };
                     return classes[level] || 'text-gray-400';
                 },
-                
+
                 formatTime(timestamp) {
                     return new Date(timestamp).toLocaleTimeString();
                 },
-                
+
                 formatKey(key) {
                     return key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
                 },
-                
+
                 formatValue(value) {
                     if (typeof value === 'object') {
                         return JSON.stringify(value, null, 2);
@@ -499,18 +499,18 @@
                     }
                     return String(value);
                 },
-                
+
                 getDisplayData(log) {
                     // Filter out standard fields for cleaner display
                     const standardFields = ['timestamp', 'task_id', 'agent', 'type', 'level', 'message', 'isNew'];
                     const displayData = {};
-                    
+
                     Object.keys(log).forEach(key => {
                         if (!standardFields.includes(key)) {
                             displayData[key] = log[key];
                         }
                     });
-                    
+
                     return displayData;
                 }
             }

@@ -32,8 +32,9 @@ A comprehensive evaluation system for testing AI agent performance under memory 
 
 ### Prerequisites
 - Python 3.11+ (avoid 3.13 due to asyncpg compatibility)
-- PostgreSQL database
-- Redis server
+- Docker and Docker Compose (for PostgreSQL and Redis)
+- PostgreSQL database (or use Docker)
+- Redis server (or use Docker)
 - Agent CLIs: iFlow, Claude, Gemini
 
 ### Installation
@@ -41,32 +42,76 @@ A comprehensive evaluation system for testing AI agent performance under memory 
 ```bash
 # 1. Clone and setup environment
 git clone <repository>
-cd cli-eval-poc/tools
+cd memory-evals
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # 2. Install dependencies
+pip install --upgrade pip
 pip install -e .
 
 # 3. Configure environment
-cp .env.example .env
-# Edit .env with your API keys and database settings
+# Create .env file with your API keys and database settings
+# See Configuration section below for required variables
 
-# 4. Setup database
+# 4. Start PostgreSQL and Redis with Docker
+# Start PostgreSQL container
+docker run -d --name cli_eval_postgres \
+  -e POSTGRES_USER=erashu212 \
+  -e POSTGRES_PASSWORD='Enter123_' \
+  -e POSTGRES_DB=cli_eval_db \
+  -p 5432:5432 \
+  postgres:latest
+
+# Start Redis container
+docker run -d --name redis \
+  -p 6379:6379 \
+  redis:latest
+
+# Wait a few seconds for databases to initialize
+sleep 5
+
+# 5. Setup database migrations
 alembic upgrade head
 
-# 5. Start services
-# Terminal 1: Redis
-redis-server
+# 6. Start services (Option A: Using startup script - Recommended)
+./scripts/run.sh
 
-# Terminal 2: API Server
+# OR start services manually (Option B)
+# Terminal 1: API Server
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 
-# Terminal 3: Worker
+# Terminal 2: Worker
 python worker.py
 
-# 6. Open dashboard
+# 7. Open dashboard
 open http://localhost:8000
+```
+
+### Quick Start with Docker (Alternative)
+
+If you prefer to use Docker for everything, you can also start PostgreSQL and Redis containers as needed:
+
+```bash
+# Stop containers (if already running)
+docker stop cli_eval_postgres redis 2>/dev/null || true
+docker rm cli_eval_postgres redis 2>/dev/null || true
+
+# Start PostgreSQL
+docker run -d --name cli_eval_postgres \
+  -e POSTGRES_USER=your_username \
+  -e POSTGRES_PASSWORD=your_password \
+  -e POSTGRES_DB=cli_eval_db \
+  -p 5432:5432 \
+  postgres:latest
+
+# Start Redis
+docker run -d --name redis \
+  -p 6379:6379 \
+  redis:latest
+
+# Verify containers are running
+docker ps
 ```
 
 ## Configuration
@@ -75,8 +120,13 @@ open http://localhost:8000
 
 #### Database & Redis
 ```bash
-DATABASE_URL=postgresql://user:password@localhost:5432/memory_break_db
+# Note: DATABASE_URL should use psycopg2 driver for SQLAlchemy
+DATABASE_URL=postgresql+psycopg2://user:password@localhost:5432/cli_eval_db
 REDIS_URL=redis://localhost:6379/0
+
+# Example with Docker containers:
+# DATABASE_URL=postgresql+psycopg2://erashu212:Enter123_@localhost:5432/cli_eval_db
+# REDIS_URL=redis://localhost:6379/0
 ```
 
 #### API Keys
@@ -223,19 +273,47 @@ Each dimension is scored 0.0-1.0, with an overall average determining pass/fail 
 
 **Database Connection Errors**
 ```bash
-# Check PostgreSQL is running
-pg_ctl status
+# Check PostgreSQL Docker container is running
+docker ps --filter "name=cli_eval_postgres"
 
-# Verify connection string
-psql "postgresql://user:password@localhost:5432/memory_break_db"
+# Check container logs if there are issues
+docker logs cli_eval_postgres
+
+# Verify connection (if using Docker)
+docker exec -it cli_eval_postgres psql -U erashu212 -d cli_eval_db
+
+# Or verify with psql client
+psql "postgresql://user:password@localhost:5432/cli_eval_db"
+
+# If container is not running, start it:
+docker start cli_eval_postgres
+
+# If container doesn't exist, create it:
+docker run -d --name cli_eval_postgres \
+  -e POSTGRES_USER=erashu212 \
+  -e POSTGRES_PASSWORD='Enter123_' \
+  -e POSTGRES_DB=cli_eval_db \
+  -p 5432:5432 \
+  postgres:latest
 ```
 
 **Redis Connection Errors**
 ```bash
-# Check Redis is running
-redis-cli ping
+# Check Redis Docker container is running
+docker ps --filter "name=redis"
 
+# Check container logs if there are issues
+docker logs redis
+
+# Verify Redis is responding
+redis-cli ping
 # Should return: PONG
+
+# If container is not running, start it:
+docker start redis
+
+# If container doesn't exist, create it:
+docker run -d --name redis -p 6379:6379 redis:latest
 ```
 
 **Agent CLI Issues**
@@ -253,10 +331,44 @@ gemini --version
 
 ### Logs
 
-- **API Server**: Check console output or logs/
-- **Worker**: Check worker.log
+- **API Server**: Check console output or `logs/api.log`
+- **Worker**: Check `logs/worker.log` or console output
 - **Task Logs**: Available via web dashboard or API
-- **Agent Transcripts**: Stored in storage/{task_id}/
+- **Agent Transcripts**: Stored in `storage/{task_id}/`
+- **Docker Containers**:
+  ```bash
+  docker logs cli_eval_postgres  # PostgreSQL logs
+  docker logs redis               # Redis logs
+  ```
+
+### Service Management
+
+**Using the startup script:**
+```bash
+# Start all services
+./scripts/run.sh
+
+# Stop all services
+./scripts/stop.sh
+```
+
+**Manual service management:**
+```bash
+# Start PostgreSQL
+docker start cli_eval_postgres
+
+# Start Redis
+docker start redis
+
+# Stop PostgreSQL
+docker stop cli_eval_postgres
+
+# Stop Redis
+docker stop redis
+
+# Remove containers (⚠️ This will delete data)
+docker rm -f cli_eval_postgres redis
+```
 
 ## Contributing
 

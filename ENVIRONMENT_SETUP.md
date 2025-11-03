@@ -127,4 +127,3 @@ docker build -f dockerfiles/iflow-agent.Dockerfile -t iflow-agent:latest .
 3. Check the container logs at `storage/{task_id}/agents/iflow/container_stdout.log`
    - You should see "100% context left" instead of "Disconnected"
    - The agent should successfully initialize and accept prompts
-

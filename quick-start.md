@@ -39,7 +39,7 @@ open http://localhost:8000
 1. **Open** http://localhost:8000 in your browser
 2. **Paste** any GitHub PR URL (e.g., `https://github.com/owner/repo/pull/123`)
 3. **Select** agents to test (iFlow, Claude, Gemini)
-4. **Click** "Create Task" then "Start Task" 
+4. **Click** "Create Task" then "Start Task"
 5. **Monitor** progress in real-time
 6. **Download** ZIP bundle with all results when complete
 

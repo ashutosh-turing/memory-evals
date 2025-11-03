@@ -187,4 +187,3 @@ http://127.0.0.1:8000/logs?taskId=YOUR_TASK_ID
 ```
 
 All the detailed logs from the API log file will now appear in the UI in real-time!
-

@@ -34,26 +34,26 @@ print_error() {
 kill_service_by_pid() {
     local service_name=$1
     local pid_file=$2
-    
+
     if [ -f "$pid_file" ]; then
         PID=$(cat "$pid_file")
         if kill -0 $PID 2>/dev/null; then
             echo -e "${YELLOW}🔪 Stopping $service_name (PID: $PID)...${NC}"
             kill $PID
-            
+
             # Wait for graceful shutdown
             local count=0
             while kill -0 $PID 2>/dev/null && [ $count -lt 10 ]; do
                 sleep 1
                 count=$((count + 1))
             done
-            
+
             # Force kill if still running
             if kill -0 $PID 2>/dev/null; then
                 print_warning "Force killing $service_name..."
                 kill -9 $PID 2>/dev/null || true
             fi
-            
+
             print_status "$service_name stopped"
         else
             print_warning "$service_name was not running"
@@ -68,12 +68,12 @@ kill_service_by_pid() {
 kill_port_processes() {
     local port=$1
     local service_name=$2
-    
+
     echo -e "${YELLOW}🔍 Checking for processes on port $port...${NC}"
-    
+
     # Find processes using the port
     PIDS=$(lsof -ti:$port 2>/dev/null || true)
-    
+
     if [ ! -z "$PIDS" ]; then
         echo -e "${YELLOW}🔪 Killing $service_name processes on port $port: $PIDS${NC}"
         echo $PIDS | xargs kill -9 2>/dev/null || true
@@ -86,7 +86,7 @@ kill_port_processes() {
 # Function to cleanup temporary files
 cleanup_temp_files() {
     echo -e "${BLUE}🧹 Cleaning up temporary files...${NC}"
-    
+
     # Clean up any temporary agent files
     if [ -d "storage" ]; then
         # Remove any incomplete task directories (optional)
@@ -100,28 +100,28 @@ cleanup_temp_files() {
 # Main shutdown function
 main() {
     echo -e "${BLUE}🛑 Shutting down services...${NC}"
-    
+
     # Stop services by PID files
     kill_service_by_pid "Worker" "logs/worker.pid"
     kill_service_by_pid "API Server" "logs/api.pid"
-    
+
     # Kill any remaining processes on API port
     kill_port_processes $API_PORT "API Server"
-    
+
     # Cleanup temporary files
     cleanup_temp_files
-    
+
     # Remove log files if requested
     if [ "$1" = "--clean-logs" ]; then
         echo -e "${BLUE}🧹 Cleaning log files...${NC}"
         rm -f logs/*.log 2>/dev/null || true
         print_status "Log files cleaned"
     fi
-    
+
     echo -e "${BLUE}========================================${NC}"
     echo -e "${GREEN}✅ All services stopped successfully!${NC}"
     echo -e "${BLUE}========================================${NC}"
-    
+
     if [ "$1" != "--clean-logs" ]; then
         echo -e "${YELLOW}Log files preserved in logs/ directory${NC}"
         echo -e "${YELLOW}Use: ./scripts/stop.sh --clean-logs to remove them${NC}"
