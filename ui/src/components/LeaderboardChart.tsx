@@ -1,9 +1,7 @@
 import { useState } from 'react'
-import { Trophy, Clock, CheckCircle2, XCircle, Loader2, ChevronDown, ChevronUp, RotateCcw, Info } from 'lucide-react'
+import { Trophy, Clock, CheckCircle2, XCircle, Loader2, MessageSquare } from 'lucide-react'
 import type { LeaderboardEntry, RubricDimension } from '../types'
-import { useAgentDetails } from '../hooks/useAgents'
-import { apiClient } from '../api/client'
-import { useToast } from './Toast'
+import { AgentDetailsModal } from './AgentDetailsModal'
 
 interface LeaderboardChartProps {
   leaderboard: LeaderboardEntry[]
@@ -19,30 +17,7 @@ const DIMENSION_LABELS: Record<string, string> = {
 }
 
 export const LeaderboardChart = ({ leaderboard, rubric, taskId }: LeaderboardChartProps) => {
-  const [expandedAgent, setExpandedAgent] = useState<string | null>(null)
-  const { data: agentDetails } = useAgentDetails(taskId, expandedAgent)
-  const { showToast } = useToast()
-  
-  const handleRetry = async (agentName: string) => {
-    if (!taskId) return
-    
-    try {
-      await apiClient.retryTask(taskId, [agentName])
-      showToast({
-        type: 'success',
-        title: 'Agent Retry',
-        message: `${agentName} has been re-queued for evaluation`
-      })
-      // Refresh the page or invalidate queries
-      window.location.reload()
-    } catch (error) {
-      showToast({
-        type: 'error',
-        title: 'Retry Failed',
-        message: `Failed to retry ${agentName}`
-      })
-    }
-  }
+  const [selectedAgent, setSelectedAgent] = useState<string | null>(null)
   const getRankBadge = (index: number) => {
     const badges = [
       { bg: 'bg-gradient-to-br from-yellow-400 to-yellow-600', text: 'text-white', label: '1st' },
@@ -122,14 +97,25 @@ export const LeaderboardChart = ({ leaderboard, rubric, taskId }: LeaderboardCha
 
   return (
     <div className="space-y-6">
+      {/* Hint for users */}
+      {taskId && leaderboard.length > 0 && (
+        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3 flex items-center gap-2">
+          <MessageSquare className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0" />
+          <p className="text-sm text-blue-700 dark:text-blue-300">
+            💡 <strong>Tip:</strong> Click on any agent card to view detailed Q&A interactions, judge rationale, and performance metrics
+          </p>
+        </div>
+      )}
+      
       {leaderboard.map((entry, index) => {
         const isWinner = index === 0
         
         return (
           <div
             key={entry.agent}
+            onClick={() => taskId && setSelectedAgent(entry.agent)}
             className={`
-              relative overflow-hidden rounded-xl transition-all duration-300 hover:shadow-xl
+              relative overflow-hidden rounded-xl transition-all duration-300 hover:shadow-xl cursor-pointer
               ${isWinner 
                 ? 'bg-gradient-to-br from-yellow-50 to-amber-50 dark:from-yellow-900/10 dark:to-amber-900/10 ring-2 ring-yellow-400 dark:ring-yellow-600 shadow-lg' 
                 : 'bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700'
@@ -257,123 +243,29 @@ export const LeaderboardChart = ({ leaderboard, rubric, taskId }: LeaderboardCha
                 })}
               </div>
 
-              {/* Expandable Details Section */}
+              {/* View Details Link */}
               {taskId && (
-                <div className="mt-4 border-t border-gray-200 dark:border-gray-700 pt-4">
-                  <button
-                    onClick={() => setExpandedAgent(expandedAgent === entry.agent ? null : entry.agent)}
-                    className="flex items-center gap-2 text-sm font-medium text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 transition-colors"
-                  >
-                    {expandedAgent === entry.agent ? (
-                      <>
-                        <ChevronUp className="w-4 h-4" />
-                        <span>Hide Details</span>
-                      </>
-                    ) : (
-                      <>
-                        <ChevronDown className="w-4 h-4" />
-                        <span>View Details</span>
-                      </>
-                    )}
-                  </button>
-
-                  {expandedAgent === entry.agent && agentDetails && (
-                    <div className="mt-4 space-y-4">
-                      {/* Error Details (if failed) */}
-                      {entry.status === 'error' && agentDetails.agent_run.error_message && (
-                        <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4">
-                          <div className="flex items-start gap-3">
-                            <XCircle className="w-5 h-5 text-red-600 dark:text-red-400 flex-shrink-0 mt-0.5" />
-                            <div className="flex-1">
-                              <h4 className="text-sm font-semibold text-red-900 dark:text-red-100 mb-2">
-                                Error Details
-                              </h4>
-                              <p className="text-sm text-red-700 dark:text-red-300 whitespace-pre-wrap">
-                                {agentDetails.agent_run.error_message}
-                              </p>
-                              <button
-                                onClick={() => handleRetry(entry.agent)}
-                                className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded-md transition-colors"
-                              >
-                                <RotateCcw className="w-4 h-4" />
-                                Retry Agent
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Judge Rationale (if completed) */}
-                      {agentDetails.scores && entry.status === 'done' && (
-                        <div className="bg-gray-50 dark:bg-gray-800/50 border border-gray-200 dark:border-gray-700 rounded-lg p-4">
-                          <div className="flex items-start gap-3">
-                            <Info className="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
-                            <div className="flex-1">
-                              <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-2">
-                                Judge Rationale
-                              </h4>
-                              <p className="text-sm text-gray-700 dark:text-gray-300 mb-3 whitespace-pre-wrap">
-                                {agentDetails.scores.rationale}
-                              </p>
-                              
-                              {/* Judge Metadata */}
-                              <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-                                {agentDetails.scores.judge_type && (
-                                  <span>Judge: {agentDetails.scores.judge_type}</span>
-                                )}
-                                {agentDetails.scores.judge_model && (
-                                  <span>Model: {agentDetails.scores.judge_model}</span>
-                                )}
-                              </div>
-
-                              {/* Breaking Details */}
-                              {!entry.passed && agentDetails.scores.breaking_details && Object.keys(agentDetails.scores.breaking_details).length > 0 && (
-                                <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
-                                  <h5 className="text-xs font-semibold text-gray-700 dark:text-gray-300 mb-2">
-                                    Why Each Dimension Failed:
-                                  </h5>
-                                  <div className="space-y-2">
-                                    {Object.entries(agentDetails.scores.breaking_details).map(([dim, reason]) => (
-                                      <div key={dim} className="text-xs">
-                                        <span className="font-medium text-red-600 dark:text-red-400">{dim}:</span>
-                                        <span className="text-gray-600 dark:text-gray-400 ml-2">{reason}</span>
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Compression Detection Info */}
-                      {entry.compression_detected && agentDetails.agent_run.stats && (
-                        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-                          <div className="flex items-start gap-3">
-                            <Trophy className="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
-                            <div className="flex-1">
-                              <h4 className="text-sm font-semibold text-blue-900 dark:text-blue-100 mb-2">
-                                Memory Compression Detected ✓
-                              </h4>
-                              <div className="text-sm text-blue-700 dark:text-blue-300 space-y-1">
-                                <p>Detection Method: {agentDetails.agent_run.stats.detection_method || 'Unknown'}</p>
-                                {agentDetails.agent_run.stats.total_tokens_estimate && (
-                                  <p>Total Tokens: {parseInt(agentDetails.agent_run.stats.total_tokens_estimate).toLocaleString()}</p>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-700">
+                  <div className="flex items-center justify-center gap-2 text-sm font-medium text-primary-600 dark:text-primary-400 group-hover:text-primary-700 dark:group-hover:text-primary-300">
+                    <MessageSquare className="w-4 h-4" />
+                    <span>Click to view detailed Q&A and judge rationale</span>
+                  </div>
                 </div>
               )}
             </div>
           </div>
         )
       })}
+      
+      {/* Agent Details Modal */}
+      {taskId && (
+        <AgentDetailsModal
+          isOpen={!!selectedAgent}
+          onClose={() => setSelectedAgent(null)}
+          taskId={taskId}
+          agentName={selectedAgent || ''}
+        />
+      )}
     </div>
   )
 }
