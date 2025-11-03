@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     anthropic_api_key: str | None = Field(default=None, alias="ANTHROPIC_API_KEY")
     google_api_key: str | None = Field(default=None, alias="GOOGLE_API_KEY")
+    github_token: str | None = Field(
+        default=None, alias="GITHUB_TOKEN"
+    )  # Optional: For higher rate limits
 
     # Security
     allowed_origins: list[str] = Field(

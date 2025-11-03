@@ -290,6 +290,8 @@ def run_agent_session(
             agent_name=agent_name.value,
             agent_run_id=str(agent_run.id),
             master_repo_path=pr_result.repo_path,
+            owner=pr_result.owner,
+            repo_name=pr_result.repo_name,
         )
 
         # Setup agent session with isolated repository

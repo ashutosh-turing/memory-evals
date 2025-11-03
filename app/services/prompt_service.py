@@ -330,84 +330,109 @@ This prompt is for PR {context.get('pr_identifier', 'unknown')} - make your resp
     def _build_at_files_content(
         self, pr_result: PRAnalysisResult, max_files: int
     ) -> str:
-        """Build the file contents section with EXTREME memory safety to prevent segfaults."""
+        """Build the file contents section using GitHub API when possible."""
 
         try:
             import gc
 
-            from app.services.pr_service import PRService
+            from app.services.github_api_service import GitHubAPIError, GitHubAPIService
 
             # CRITICAL: Ultra-conservative limits to prevent crashes
-            ABSOLUTE_MAX_TOTAL = 15000  # Drastically reduced total size
-            ABSOLUTE_MAX_FILE = 1000  # Much smaller per-file limit
-            ABSOLUTE_MAX_FILES = 10  # Severely limit file count
-            MAX_FILE_SIZE_BYTES = 10240  # 10KB max file size on disk
+            absolute_max_total = 15000  # Drastically reduced total size
+            absolute_max_file = 1000  # Much smaller per-file limit
+            absolute_max_files = 10  # Severely limit file count
 
-            pr_service = PRService()
             at_files_parts = []
             total_chars = 0
 
             # Ultra-conservative file count
-            safe_max_files = min(max_files, ABSOLUTE_MAX_FILES)
+            safe_max_files = min(max_files, absolute_max_files)
             files_to_process = pr_result.changed_files[:safe_max_files]
 
             self.logger.info(
                 f"SAFE MODE: Processing only {len(files_to_process)} files with ultra-conservative limits"
             )
 
-            # Process files with extreme caution
+            # Try to use GitHub API first (much faster)
+            github_api = GitHubAPIService()
+            api_success = False
+
+            try:
+                # Fetch file contents via API
+                file_contents = github_api.fetch_changed_files_contents(
+                    pr_result.owner,
+                    pr_result.repo_name,
+                    pr_result.pr_number,
+                    safe_max_files,
+                )
+                api_success = True
+                self.logger.info(f"Fetched {len(file_contents)} files via GitHub API")
+
+            except (GitHubAPIError, Exception) as api_error:
+                self.logger.warning(
+                    f"GitHub API failed, falling back to local files: {api_error}"
+                )
+                file_contents = {}
+
+            # Process files
             processed_count = 0
-            for i, file_path in enumerate(files_to_process):
+            for file_path in files_to_process:
                 try:
                     # CRITICAL: Check current memory usage
-                    if len("\n".join(at_files_parts)) > ABSOLUTE_MAX_TOTAL // 2:
+                    if len("\n".join(at_files_parts)) > absolute_max_total // 2:
                         at_files_parts.append("... [STOPPED: Memory limit approached]")
                         break
 
-                    # CRITICAL: File size check BEFORE reading
-                    full_path = pr_result.repo_path / file_path
-                    if not full_path.exists() or not full_path.is_file():
+                    # Get content from API or local file
+                    content = None
+                    if api_success and file_path in file_contents:
+                        # Use content from API
+                        content = file_contents[file_path]
+                    elif pr_result.repo_path.exists():
+                        # Fallback: read from local file
+                        full_path = pr_result.repo_path / file_path
+                        if full_path.exists() and full_path.is_file():
+                            file_size = full_path.stat().st_size
+                            if file_size > 10240:  # 10KB max
+                                at_files_parts.extend(
+                                    [
+                                        f"📄 **{file_path}** (size: {file_size:,} bytes - SKIPPED)",
+                                        "File too large for safe processing",
+                                        "",
+                                    ]
+                                )
+                                continue
+
+                            try:
+                                with open(
+                                    full_path, encoding="utf-8", errors="ignore"
+                                ) as f:
+                                    content = f.read(absolute_max_file)
+                            except Exception as read_error:
+                                at_files_parts.extend(
+                                    [
+                                        f"📄 **{file_path}** - READ ERROR",
+                                        f"Could not read: {str(read_error)[:50]}",
+                                        "",
+                                    ]
+                                )
+                                continue
+                        else:
+                            continue
+                    else:
+                        # No API content and no local file - skip
                         continue
 
-                    file_size = full_path.stat().st_size
-                    if file_size > MAX_FILE_SIZE_BYTES:
-                        at_files_parts.extend(
-                            [
-                                f"📄 **{file_path}** (size: {file_size:,} bytes - SKIPPED)",
-                                "File too large for safe processing",
-                                "",
-                            ]
-                        )
-                        continue
+                    # Truncate content if needed
+                    if len(content) > absolute_max_file:
+                        content = content[:absolute_max_file] + "\n... [TRUNCATED]"
 
-                    # CRITICAL: Read file with extreme safety
-                    try:
-                        with open(full_path, encoding="utf-8", errors="ignore") as f:
-                            # Read only small chunks to prevent memory explosion
-                            content = f.read(ABSOLUTE_MAX_FILE)
-
-                        # CRITICAL: Aggressive truncation
-                        if len(content) > ABSOLUTE_MAX_FILE:
-                            content = content[:ABSOLUTE_MAX_FILE] + "\n... [TRUNCATED]"
-
-                        # CRITICAL: Safe content filtering
-                        content = self._sanitize_content(
-                            content, ABSOLUTE_MAX_FILE // 2
-                        )
-
-                    except Exception as read_error:
-                        at_files_parts.extend(
-                            [
-                                f"📄 **{file_path}** - READ ERROR",
-                                f"Could not read: {str(read_error)[:50]}",
-                                "",
-                            ]
-                        )
-                        continue
+                    # CRITICAL: Safe content filtering
+                    content = self._sanitize_content(content, absolute_max_file // 2)
 
                     # CRITICAL: Check total size before adding
                     new_section = f"📄 **{file_path}**\n{content}\n"
-                    if total_chars + len(new_section) > ABSOLUTE_MAX_TOTAL:
+                    if total_chars + len(new_section) > absolute_max_total:
                         at_files_parts.append("... [STOPPED: Total size limit reached]")
                         break
 
@@ -438,8 +463,8 @@ This prompt is for PR {context.get('pr_identifier', 'unknown')} - make your resp
             result = "\n".join(result_parts)
 
             # CRITICAL: Final truncation if needed
-            if len(result) > ABSOLUTE_MAX_TOTAL:
-                result = result[:ABSOLUTE_MAX_TOTAL] + "\n... [FINAL TRUNCATION]"
+            if len(result) > absolute_max_total:
+                result = result[:absolute_max_total] + "\n... [FINAL TRUNCATION]"
 
             # Force garbage collection before return
             gc.collect()

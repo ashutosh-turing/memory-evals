@@ -237,14 +237,18 @@ async def run_task(
     if not task_db:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    if task_db.status != TaskStatus.QUEUED:
+    # Allow running tasks in QUEUED or ERROR status (retry failed tasks)
+    if task_db.status not in (TaskStatus.QUEUED, TaskStatus.ERROR):
         raise HTTPException(
             status_code=400, detail=f"Task cannot be run in status: {task_db.status}"
         )
 
     try:
-        # Update task status to running
-        db.update_task(task_id, {"status": TaskStatus.RUNNING})
+        # Update task status to running and clear previous error
+        db.update_task(
+            task_id,
+            {"status": TaskStatus.RUNNING.value, "error_message": None},
+        )
 
         # Enqueue simple task processing job
         result = process_task_simple(str(task_id))
@@ -260,7 +264,10 @@ async def run_task(
         # Reset task status on failure
         db.update_task(
             task_id,
-            {"status": TaskStatus.ERROR, "error_message": f"Failed to start: {e!s}"},
+            {
+                "status": TaskStatus.ERROR.value,
+                "error_message": f"Failed to start: {e!s}",
+            },
         )
         raise HTTPException(status_code=500, detail="Failed to start task")
 

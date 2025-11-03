@@ -1,4 +1,4 @@
-"""GitHub Pull Request service for cloning and analyzing PRs."""
+"""GitHub Pull Request service for analyzing PRs using GitHub API."""
 
 import logging
 import shutil
@@ -7,6 +7,7 @@ from pathlib import Path
 from git import GitCommandError, Repo
 
 from app.config import settings
+from app.services.github_api_service import GitHubAPIError, GitHubAPIService
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,7 @@ class PRService:
             self.run_root = Path(str(settings.run_root)).expanduser()
         self.max_files = settings.max_files_per_task
         self.logger = logging.getLogger("services.pr")
+        self.github_api = GitHubAPIService()
 
     def process_pr(self, pr_url: str, task_id: str) -> PRAnalysisResult:
         """
@@ -91,31 +93,63 @@ class PRService:
 
         owner, repo_name, pr_number = pr_info
 
-        # Create task workspace with master repo
+        # Create task workspace
         task_dir = self.run_root / task_id
         pr_dir = task_dir / "pr"
         master_repo_path = pr_dir / "master" / repo_name
 
         try:
-            # Clone repository to master location
-            self._clone_repository(owner, repo_name, master_repo_path)
+            # Use GitHub API to get PR information (much faster than cloning)
+            try:
+                pr_info_data = self.github_api.get_pr_info(owner, repo_name, pr_number)
+                pr_files_data = self.github_api.get_pr_files(
+                    owner, repo_name, pr_number
+                )
 
-            # Analyze PR changes
-            changed_files, base_branch, head_branch, commit_sha = (
-                self._analyze_pr_changes(master_repo_path, pr_number)
-            )
+                # Extract changed files from API response
+                changed_files = [f["filename"] for f in pr_files_data]
 
-            # Filter and validate files
+                # Get branch and commit info from API
+                base_branch = pr_info_data.get("base", {}).get("ref", "main")
+                head_branch = pr_info_data.get("head", {}).get("ref", f"pr-{pr_number}")
+                commit_sha = pr_info_data.get("head", {}).get("sha", "")
+
+                self.logger.info(
+                    f"Retrieved {len(changed_files)} changed files via GitHub API"
+                )
+
+            except (GitHubAPIError, Exception) as api_error:
+                self.logger.warning(
+                    f"GitHub API failed: {api_error}. Falling back to cloning."
+                )
+                # Fallback to cloning if API fails
+                self._clone_repository(owner, repo_name, master_repo_path)
+                changed_files, base_branch, head_branch, commit_sha = (
+                    self._analyze_pr_changes(master_repo_path, pr_number)
+                )
+
+            # Filter files (by extension and patterns, no need for local repo when using API)
             total_files_before_filter = len(changed_files)
-            filtered_files = self._filter_changed_files(changed_files, master_repo_path)
+            if master_repo_path.exists():
+                # If repo exists (from fallback), use traditional filtering
+                filtered_files = self._filter_changed_files(
+                    changed_files, master_repo_path
+                )
+            else:
+                # When using API, filter by patterns only (files are guaranteed to exist)
+                filtered_files = self._filter_changed_files_by_pattern(changed_files)
 
             self.logger.info(
                 f"Successfully processed PR {pr_number}: "
                 f"{len(filtered_files)}/{total_files_before_filter} files selected"
             )
 
+            # Create repo path directory structure even if not cloning
+            # (needed for agent repo copies later)
+            master_repo_path.parent.mkdir(parents=True, exist_ok=True)
+
             result = PRAnalysisResult(
-                repo_path=master_repo_path,  # This is the master copy
+                repo_path=master_repo_path,  # May or may not exist if using API
                 owner=owner,
                 repo_name=repo_name,
                 pr_number=pr_number,
@@ -139,22 +173,32 @@ class PRService:
             raise PRServiceError(f"PR processing failed: {e}") from e
 
     def create_agent_repo_copy(
-        self, task_id: str, agent_name: str, agent_run_id: str, master_repo_path: Path
+        self,
+        task_id: str,
+        agent_name: str,
+        agent_run_id: str,
+        master_repo_path: Path,
+        owner: str | None = None,
+        repo_name: str | None = None,
     ) -> Path:
         """
         Create an isolated repository copy for a specific agent.
+
+        If master repo doesn't exist (API-only mode), clones repo just for this agent.
 
         Args:
             task_id: Task identifier
             agent_name: Name of the agent (iflow, claude, gemini)
             agent_run_id: Unique agent run identifier
-            master_repo_path: Path to the master repository copy
+            master_repo_path: Path to the master repository copy (may not exist)
+            owner: GitHub owner (required if master_repo_path doesn't exist)
+            repo_name: GitHub repo name (required if master_repo_path doesn't exist)
 
         Returns:
             Path to the agent's isolated repository copy
 
         Raises:
-            PRServiceError: If copying fails
+            PRServiceError: If copying/cloning fails
         """
 
         # Create agent-specific repository path
@@ -169,19 +213,33 @@ class PRService:
             if agent_repo_path.exists():
                 shutil.rmtree(agent_repo_path)
 
-            # Copy master repository to agent's workspace
-            self.logger.info(
-                f"Creating isolated repo copy for {agent_name}: {agent_repo_path}"
-            )
-            shutil.copytree(
-                src=master_repo_path,
-                dst=agent_repo_path,
-                symlinks=False,
-                ignore=shutil.ignore_patterns(
-                    ".git"
-                ),  # Skip .git directory for efficiency
-                dirs_exist_ok=True,
-            )
+            # Check if master repo exists (from API-only mode, it might not)
+            if master_repo_path.exists() and master_repo_path.is_dir():
+                # Copy master repository to agent's workspace
+                self.logger.info(
+                    f"Copying master repo for {agent_name}: {agent_repo_path}"
+                )
+                shutil.copytree(
+                    src=master_repo_path,
+                    dst=agent_repo_path,
+                    symlinks=False,
+                    ignore=shutil.ignore_patterns(
+                        ".git"
+                    ),  # Skip .git directory for efficiency
+                    dirs_exist_ok=True,
+                )
+            elif owner and repo_name:
+                # Master repo doesn't exist (API-only mode) - clone just for this agent
+                self.logger.info(
+                    f"Master repo not found (API mode), cloning fresh repo for {agent_name}"
+                )
+                self._clone_repository(owner, repo_name, agent_repo_path)
+            else:
+                # Can't create repo without owner/repo info
+                raise PRServiceError(
+                    f"Cannot create repo for {agent_name}: master repo doesn't exist "
+                    "and owner/repo not provided"
+                )
 
             self.logger.info(
                 f"Successfully created isolated repo for {agent_name}: {agent_repo_path}"
@@ -248,7 +306,12 @@ class PRService:
         return owner, repo_name, pr_number
 
     def _clone_repository(self, owner: str, repo_name: str, repo_path: Path) -> None:
-        """Clone GitHub repository to local path."""
+        """
+        Clone GitHub repository to local path.
+
+        Note: This is now a fallback method. Most operations use GitHub API.
+        Only used when API fails or when iFlow agent needs working directory.
+        """
 
         # Ensure repo_path is absolute
         if not repo_path.is_absolute():
@@ -436,6 +499,130 @@ class PRService:
                 source_files.append(str(relative_path))
 
         return source_files
+
+    def _filter_changed_files_by_pattern(self, changed_files: list[str]) -> list[str]:
+        """
+        Filter changed files by patterns without accessing file system.
+
+        Used when working with GitHub API where we don't have local files yet.
+        Filters based on path patterns, extensions, and ignored directories.
+        """
+        filtered_files = []
+
+        for file_path in changed_files:
+            # Skip ignored paths (check by pattern)
+            if self._is_ignored_path_by_pattern(file_path):
+                continue
+
+            filtered_files.append(file_path)
+
+            # Limit number of files
+            if len(filtered_files) >= self.max_files:
+                break
+
+        return filtered_files
+
+    def _is_ignored_path_by_pattern(self, file_path: str) -> bool:
+        """Check if file path should be ignored based on pattern (no file system access)."""
+        path_str = file_path.lower()
+
+        # Ignored directories
+        ignored_dirs = {
+            "node_modules",
+            ".git",
+            ".svn",
+            ".hg",
+            "__pycache__",
+            ".pytest_cache",
+            ".mypy_cache",
+            ".tox",
+            "venv",
+            "env",
+            "build",
+            "dist",
+            "target",
+            "bin",
+            "obj",
+            ".idea",
+            ".vscode",
+            "coverage",
+            ".coverage",
+            ".nyc_output",
+        }
+
+        # Check if any part of the path is an ignored directory
+        path_parts = file_path.replace("\\", "/").split("/")
+        for part in path_parts:
+            if part.lower() in ignored_dirs:
+                return True
+
+        # Ignored file patterns
+        ignored_patterns = [
+            ".min.js",
+            ".min.css",
+            ".bundle.js",
+            ".bundle.css",
+            "package-lock.json",
+            "yarn.lock",
+            "composer.lock",
+            ".log",
+            ".tmp",
+            ".temp",
+            ".cache",
+        ]
+
+        for pattern in ignored_patterns:
+            if pattern in path_str:
+                return True
+
+        # Ignored extensions
+        ignored_extensions = {
+            ".pyc",
+            ".pyo",
+            ".class",
+            ".o",
+            ".obj",
+            ".exe",
+            ".dll",
+            ".so",
+            ".dylib",
+            ".bin",
+            ".jar",
+            ".war",
+            ".tar",
+            ".gz",
+            ".zip",
+            ".rar",
+            ".7z",
+            ".pdf",
+            ".doc",
+            ".docx",
+            ".xls",
+            ".xlsx",
+            ".ppt",
+            ".pptx",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".bmp",
+            ".ico",
+            ".svg",
+            ".mp4",
+            ".avi",
+            ".mov",
+            ".mp3",
+            ".wav",
+            ".flac",
+        }
+
+        # Get file extension
+        if "." in path_str:
+            ext = "." + path_str.split(".")[-1].lower()
+            if ext in ignored_extensions:
+                return True
+
+        return False
 
     def _filter_changed_files(
         self, changed_files: list[str], repo_path: Path

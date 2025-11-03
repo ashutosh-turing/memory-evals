@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import socket
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +42,8 @@ class IFlowAgent(AgentAdapter):
         self.session_timeout = settings.agent_session_timeout
         self.iflow_process = None
         self.port = 8090
+        self.iflow_stdout_log = None
+        self.iflow_stderr_log = None
 
     def validate_installation(self) -> bool:
         """Validate that iFlow CLI is installed and working."""
@@ -100,7 +103,24 @@ class IFlowAgent(AgentAdapter):
             f"Starting iFlow process in {repo_dir} with {self.max_tokens} token limit"
         )
 
+        # Create log files for iFlow output
+        log_dir = repo_dir.parent / "iflow_logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stdout_log = log_dir / f"iflow_{timestamp}_stdout.log"
+        stderr_log = log_dir / f"iflow_{timestamp}_stderr.log"
+
+        # Open files and keep them open for the duration of the process
+        # Note: Cannot use context manager here as files must remain open for subprocess
+        stdout_file = open(stdout_log, "w", encoding="utf-8")  # noqa: SIM115
+        stderr_file = open(stderr_log, "w", encoding="utf-8")  # noqa: SIM115
+
+        # Store log paths for later access
+        self.iflow_stdout_log = stdout_log
+        self.iflow_stderr_log = stderr_log
+
         # Start iFlow with experimental ACP mode and token limit
+        # Redirect output to files to avoid blocking
         process = subprocess.Popen(
             [
                 self.binary_path,
@@ -112,14 +132,81 @@ class IFlowAgent(AgentAdapter):
                 "--yolo",  # Auto-accept actions
             ],
             cwd=str(repo_dir),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=stdout_file,
+            stderr=stderr_file,
             text=True,
         )
 
         self.iflow_process = process
         self.logger.info(f"iFlow process started with PID {process.pid}")
+        self.logger.info(f"iFlow stdout log: {stdout_log}")
+        self.logger.info(f"iFlow stderr log: {stderr_log}")
         return process
+
+    async def _wait_for_iflow_ready(self, max_attempts: int = 30) -> bool:
+        """Wait for iFlow WebSocket server to be ready."""
+        for attempt in range(max_attempts):
+            # Check if process is still running
+            if self.iflow_process and self.iflow_process.poll() is not None:
+                # Process has terminated
+                exit_code = self.iflow_process.returncode
+                self.logger.error(
+                    f"iFlow process terminated early (exit code: {exit_code})"
+                )
+
+                # Try to read error from stderr log file
+                if hasattr(self, "iflow_stderr_log") and self.iflow_stderr_log.exists():
+                    try:
+                        stderr_content = self.iflow_stderr_log.read_text(
+                            encoding="utf-8", errors="replace"
+                        )
+                        if stderr_content.strip():
+                            self.logger.error(f"iFlow stderr: {stderr_content[:500]}")
+                        elif (
+                            hasattr(self, "iflow_stdout_log")
+                            and self.iflow_stdout_log.exists()
+                        ):
+                            # Check stdout for errors
+                            stdout_content = self.iflow_stdout_log.read_text(
+                                encoding="utf-8", errors="replace"
+                            )
+                            if stdout_content.strip():
+                                self.logger.error(
+                                    f"iFlow stdout: {stdout_content[:500]}"
+                                )
+                    except Exception as e:
+                        self.logger.debug(f"Could not read iFlow log files: {e}")
+                else:
+                    self.logger.error(
+                        "iFlow process terminated early - check stderr log for details"
+                    )
+                return False
+
+            # Check if port is listening
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex(("localhost", self.port))
+                sock.close()
+                if result == 0:
+                    self.logger.info(
+                        f"iFlow WebSocket server is ready on port {self.port}"
+                    )
+                    return True
+            except Exception as e:
+                self.logger.debug(f"Port check attempt {attempt + 1} failed: {e}")
+
+            # Wait before next attempt
+            await asyncio.sleep(1)
+            if attempt % 5 == 0:  # Log every 5 attempts
+                self.logger.debug(
+                    f"Waiting for iFlow WebSocket server... (attempt {attempt + 1}/{max_attempts})"
+                )
+
+        self.logger.error(
+            f"iFlow WebSocket server did not become ready after {max_attempts} attempts"
+        )
+        return False
 
     def _get_context_stats(self) -> dict[str, Any] | None:
         """Get context statistics by running /stats model command via subprocess."""
@@ -169,9 +256,9 @@ class IFlowAgent(AgentAdapter):
                 elif isinstance(msg, ToolCallMessage):
                     tool_info = {
                         "status": msg.status,
-                        "tool_name": msg.tool_name
-                        if hasattr(msg, "tool_name")
-                        else None,
+                        "tool_name": (
+                            msg.tool_name if hasattr(msg, "tool_name") else None
+                        ),
                         "label": msg.label if hasattr(msg, "label") else None,
                     }
                     tool_calls.append(tool_info)
@@ -184,9 +271,11 @@ class IFlowAgent(AgentAdapter):
                             {
                                 "content": entry.content,
                                 "status": entry.status,
-                                "priority": entry.priority
-                                if hasattr(entry, "priority")
-                                else None,
+                                "priority": (
+                                    entry.priority
+                                    if hasattr(entry, "priority")
+                                    else None
+                                ),
                             }
                             for entry in msg.entries
                         ]
@@ -276,8 +365,13 @@ class IFlowAgent(AgentAdapter):
         # Start iFlow process
         self._start_iflow_process(session.repo_dir)
 
-        # Wait for iFlow to start
-        await asyncio.sleep(5)
+        # Wait for iFlow WebSocket server to be ready
+        self.logger.info("Waiting for iFlow process to initialize...")
+        if not await self._wait_for_iflow_ready():
+            raise AgentExecutionError(
+                self.name.value,
+                "Failed to connect: iFlow process did not start properly or WebSocket server is not ready",
+            )
         milestones.append("iflow_started")
 
         try:

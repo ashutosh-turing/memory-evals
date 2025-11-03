@@ -365,6 +365,8 @@ class SimpleWorker:
                         **task_data,
                         "task_id": task_id,
                         "agent_name": agent_name.value,
+                        "owner": pr_result.owner,
+                        "repo_name": pr_result.repo_name,
                     }
 
                     # Submit agent to run in parallel
@@ -472,14 +474,26 @@ class SimpleWorker:
             agent_dir = Path(settings.run_root) / task_id / "agents" / agent_type
             agent_dir.mkdir(parents=True, exist_ok=True)
 
-            # Create AgentSession
+            # Create isolated repo copy for this agent (handles API-only mode)
+            master_repo_path = Path(task_data["pr_result"]["repo_path"])
+            pr_service = PRService()
+            agent_repo_path = pr_service.create_agent_repo_copy(
+                task_id=task_id,
+                agent_name=agent_type,
+                agent_run_id=str(task_data.get("agent_run_id", task_id)),
+                master_repo_path=master_repo_path,
+                owner=task_data.get("owner"),
+                repo_name=task_data.get("repo_name"),
+            )
+
+            # Create AgentSession with isolated repo
             session = type(
                 "AgentSession",
                 (),
                 {
                     "task_id": UUID(task_id),
                     "agent_run_id": UUID(task_data.get("agent_run_id", task_id)),
-                    "repo_dir": Path(task_data["pr_result"]["repo_path"]),
+                    "repo_dir": agent_repo_path,
                     "output_dir": agent_dir,
                     "prompts": task_data.get("prompts", {}),
                     "timeout": settings.agent_session_timeout,
