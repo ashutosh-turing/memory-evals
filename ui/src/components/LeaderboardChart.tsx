@@ -55,7 +55,11 @@ export const LeaderboardChart = ({ leaderboard, rubric }: LeaderboardChartProps)
                   {entry.agent}
                 </h3>
                 <p className="text-sm text-gray-500 dark:text-gray-400">
-                  {entry.passed ? 'Passed' : 'Failed'} evaluation
+                  {entry.status === 'done' 
+                    ? (entry.passed ? 'Passed' : 'Failed') + ' evaluation'
+                    : entry.status === 'running' 
+                      ? 'Running evaluation...'
+                      : 'Waiting to evaluate...'}
                 </p>
                 {!entry.passed && entry.breaking_dimensions && entry.breaking_dimensions.length > 0 && (
                   <div className="mt-1 text-xs text-error-600 dark:text-error-400 font-medium">

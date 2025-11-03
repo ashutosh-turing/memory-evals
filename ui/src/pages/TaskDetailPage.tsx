@@ -48,14 +48,43 @@ export const TaskDetailPage = () => {
     }
   }
 
-  const handleDownloadBundle = () => {
-    const bundleUrl = apiClient.getBundleUrl(taskId!)
-    window.open(bundleUrl, '_blank')
-    showToast({
-      type: 'success',
-      title: 'Download started',
-      message: 'Your artifact bundle is being downloaded',
-    })
+  const handleDownloadBundle = async () => {
+    try {
+      const token = localStorage.getItem('auth_token')
+      const bundleUrl = apiClient.getBundleUrl(taskId!)
+      
+      const response = await fetch(bundleUrl, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      
+      if (!response.ok) {
+        throw new Error('Download failed')
+      }
+      
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `task-${taskId}-bundle.zip`
+      document.body.appendChild(a)
+      a.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(a)
+      
+      showToast({
+        type: 'success',
+        title: 'Download started',
+        message: 'Your artifact bundle is being downloaded',
+      })
+    } catch (error) {
+      showToast({
+        type: 'error',
+        title: 'Download failed',
+        message: 'Failed to download artifact bundle',
+      })
+    }
   }
 
   if (taskLoading) {

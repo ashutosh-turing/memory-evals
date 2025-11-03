@@ -2,8 +2,11 @@
 
 import logging
 import os
+import asyncio
+import threading
 from contextlib import asynccontextmanager
 from typing import Dict, Any
+from pathlib import Path
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,10 +14,11 @@ from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 from app.config import settings
 from app.infrastructure.database import create_tables, engine
-from app.infrastructure.queue import check_queue_health
+from app.infrastructure.cloud_queue import get_pubsub_manager
 from app.agents.registry import initialize_agent_registry
 from app.presentation.routers import tasks, artifacts, health, logs, internal
 from app.presentation.middleware import LoggingMiddleware, SecurityMiddleware, SSOAuthMiddleware
@@ -36,7 +40,6 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     # Startup
     logger.info("Starting Memory-Break Orchestrator...")
-    logger.info(f"Redis URL: {settings.redis_url}")
     logger.info(f"Database URL: {settings.database_url}")
     
     # Initialize database
@@ -47,17 +50,68 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing agent registry...")
     initialize_agent_registry()
     
-    # Health checks
+    # Health checks (lightweight)
     logger.info("Performing startup health checks...")
-    queue_health = check_queue_health()
-    if not queue_health.get("redis_connected", False):
-        logger.error("Redis connection failed - worker operations will not work!")
-        logger.error(f"Check Redis server at: {settings.redis_url}")
+
+    # Start Pub/Sub worker if queue is enabled
+    worker_future = None
+    worker_thread = None
+    if settings.queue_enabled and settings.google_cloud_project:
+        logger.info("Starting Pub/Sub worker...")
+        
+        # Configure worker-specific logging BEFORE starting thread
+        worker_logger = logging.getLogger('workers')
+        worker_logger.setLevel(logging.INFO)
+        worker_logger.propagate = False  # Do not duplicate logs into api.log
+        
+        # Add file handler for worker logs
+        worker_log_path = Path('logs/worker.log')
+        worker_log_path.parent.mkdir(exist_ok=True)
+        file_handler = logging.FileHandler(worker_log_path)
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        ))
+        worker_logger.addHandler(file_handler)
+        
+        # Also log to console
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        ))
+        worker_logger.addHandler(console_handler)
+        
+        try:
+            from workers.cloud_worker import process_message
+            
+            pubsub_manager = get_pubsub_manager()
+            if pubsub_manager.subscriber:
+                # Start worker in background thread
+                def run_worker():
+                    nonlocal worker_future
+                    worker_logger.info("Pub/Sub worker thread starting...")
+                    try:
+                        worker_future = pubsub_manager.subscribe_to_tasks(
+                            callback=process_message
+                        )
+                        worker_logger.info("Pub/Sub worker subscribed successfully")
+                        # Keep worker running; timeouts are expected as heartbeats
+                        while True:
+                            try:
+                                worker_future.result(timeout=5.0)
+                            except FuturesTimeoutError:
+                                continue
+                    except Exception:
+                        worker_logger.error("Worker fatal error", exc_info=True)
+                
+                worker_thread = threading.Thread(target=run_worker, daemon=True)
+                worker_thread.start()
+                logger.info("Pub/Sub worker thread started")
+            else:
+                logger.warning("Pub/Sub subscriber not initialized - tasks will not be processed")
+        except Exception as e:
+            logger.error(f"Failed to initialize Pub/Sub worker: {e}")
     else:
-        logger.info("Redis connection successful")
-    
-    # Note: Container management is now handled by workers
-    logger.info("Using worker-managed container architecture for agent isolation")
+        logger.info("Queue disabled or Google Cloud project not configured - Pub/Sub worker not started")
     
     logger.info("Application startup complete!")
     
@@ -66,7 +120,15 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down Memory-Break Orchestrator...")
     
-    # Container management is handled by workers - no cleanup needed at API level
+    # Stop Pub/Sub worker
+    if 'worker_future' in locals() and worker_future:
+        logger.info("Stopping Pub/Sub worker...")
+        try:
+            worker_future.cancel()
+            await asyncio.sleep(1)
+            logger.info("Pub/Sub worker stopped")
+        except Exception as e:
+            logger.warning(f"Error stopping worker: {e}")
     
     # Close database connections
     logger.info("Closing database connections...")

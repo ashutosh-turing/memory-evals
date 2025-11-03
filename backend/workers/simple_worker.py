@@ -324,7 +324,7 @@ class SimpleWorker:
                     future = executor.submit(
                         self._run_agent_container,
                         task_id, 
-                        agent_name.value.lower(), 
+                        agent_name.value, 
                         agent_task_data
                     )
                     futures[future] = agent_name.value
@@ -376,6 +376,21 @@ class SimpleWorker:
         
         return agent_results
     
+    def _coerce_agent_enum(self, agent_str: str) -> AgentName:
+        """Convert arbitrary agent string to AgentName enum, case-insensitive and by name/value."""
+        try:
+            return AgentName(agent_str)  # direct by value
+        except Exception:
+            pass
+        try:
+            return AgentName[agent_str.upper()]  # by name
+        except Exception:
+            pass
+        for member in AgentName:
+            if str(member.value).lower() == agent_str.lower() or member.name.lower() == agent_str.lower():
+                return member
+        raise ValueError(f"Unknown agent: {agent_str}")
+
     def _run_agent_container(
         self, 
         task_id: str, 
@@ -389,7 +404,7 @@ class SimpleWorker:
             
             # Get agent from registry
             agent_registry = get_agent_registry()
-            agent_name = AgentName(agent_type)
+            agent_name = self._coerce_agent_enum(agent_type)
             agent = agent_registry.get_agent(agent_name)
             
             # Update agent run status to RUNNING in database
@@ -403,7 +418,7 @@ class SimpleWorker:
                     logger.info(f"Updated {agent_type} agent status to RUNNING")
             
             # Create agent directory in storage
-            agent_dir = Path(settings.run_root) / task_id / "agents" / agent_type
+            agent_dir = Path(settings.run_root) / task_id / "agents" / agent_name.value.lower()
             agent_dir.mkdir(parents=True, exist_ok=True)
             
             # Create AgentSession
