@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import socket
 import subprocess
 from datetime import datetime
@@ -99,8 +100,34 @@ class IFlowAgent(AgentAdapter):
 
     def _start_iflow_process(self, repo_dir: Path) -> subprocess.Popen:
         """Start iFlow CLI process with ACP mode and token limit."""
+        # Validate repo directory exists and is accessible
+        if not repo_dir.exists():
+            raise AgentExecutionError(
+                self.name.value,
+                f"Repository directory does not exist: {repo_dir}. "
+                "The repo may not have been cloned or copied correctly.",
+            )
+
+        if not repo_dir.is_dir():
+            raise AgentExecutionError(
+                self.name.value,
+                f"Repository path is not a directory: {repo_dir}",
+            )
+
+        # Check if directory is readable
+        if not os.access(repo_dir, os.R_OK):
+            raise AgentExecutionError(
+                self.name.value,
+                f"Repository directory is not readable: {repo_dir}. "
+                "Please check file permissions.",
+            )
+
         self.logger.info(
             f"Starting iFlow process in {repo_dir} with {self.max_tokens} token limit"
+        )
+        self.logger.debug(f"Repository directory exists: {repo_dir.exists()}")
+        self.logger.debug(
+            f"Repository directory is readable: {os.access(repo_dir, os.R_OK)}"
         )
 
         # Create log files for iFlow output
@@ -119,6 +146,23 @@ class IFlowAgent(AgentAdapter):
         self.iflow_stdout_log = stdout_log
         self.iflow_stderr_log = stderr_log
 
+        # Prepare environment variables for iFlow CLI
+        # iFlow CLI reads API key from environment variables
+        env = os.environ.copy()
+        if settings.iflow_api_key:
+            env["IFLOW_API_KEY"] = settings.iflow_api_key
+            self.logger.debug("IFLOW_API_KEY configured for iFlow process")
+        else:
+            self.logger.warning(
+                "IFLOW_API_KEY not set - iFlow CLI may fail to authenticate"
+            )
+
+        # Add other iFlow config as environment variables if needed
+        if settings.iflow_base_url:
+            env["IFLOW_BASE_URL"] = settings.iflow_base_url
+        if settings.iflow_model_name:
+            env["IFLOW_MODEL_NAME"] = settings.iflow_model_name
+
         # Start iFlow with experimental ACP mode and token limit
         # Redirect output to files to avoid blocking
         process = subprocess.Popen(
@@ -135,6 +179,7 @@ class IFlowAgent(AgentAdapter):
             stdout=stdout_file,
             stderr=stderr_file,
             text=True,
+            env=env,  # Pass environment variables including API key
         )
 
         self.iflow_process = process
@@ -189,6 +234,12 @@ class IFlowAgent(AgentAdapter):
                 result = sock.connect_ex(("localhost", self.port))
                 sock.close()
                 if result == 0:
+                    # Port is open - give WebSocket server a moment to fully initialize
+                    # before confirming readiness
+                    self.logger.debug(
+                        f"Port {self.port} is open, waiting for WebSocket protocol initialization..."
+                    )
+                    await asyncio.sleep(2)  # Allow WebSocket server to fully initialize
                     self.logger.info(
                         f"iFlow WebSocket server is ready on port {self.port}"
                     )
@@ -376,7 +427,7 @@ class IFlowAgent(AgentAdapter):
 
         try:
             with open(transcript_path, "w", encoding="utf-8") as log_file:
-                # Connect via SDK
+                # Connect via SDK with retry logic
                 options = IFlowOptions(
                     auto_start_process=False,
                     url=f"ws://localhost:{self.port}/acp",
@@ -385,148 +436,196 @@ class IFlowAgent(AgentAdapter):
 
                 self.logger.info(f"Connecting to iFlow at {options.url}")
 
-                async with IFlowClient(options) as client:
-                    milestones.append("sdk_connected")
+                # Retry connection with exponential backoff
+                max_connection_attempts = 5
+                connection_delay = 1.0
+                connected = False
+                last_error = None
 
-                    # Phase 1: Initialize repository with /init
-                    self.logger.info("=" * 80)
-                    self.logger.info("PHASE 1: Repository Initialization")
-                    self.logger.info("=" * 80)
-
-                    init_result = await self._send_and_collect(
-                        client, "/init", log_file, session_logger, timeout=600
-                    )
-                    responses.append({"phase": "init", **init_result})
-                    milestones.append("repo_initialized")
-
-                    # Estimate tokens (rough: 1 token ≈ 4 chars)
-                    total_tokens_estimate += len(init_result["response"]) // 4
-                    stats["init_tokens_estimate"] = total_tokens_estimate
-
-                    # Phase 2: Pre-compression prompt
-                    self.logger.info("=" * 80)
-                    self.logger.info("PHASE 2: Pre-Compression Analysis")
-                    self.logger.info("=" * 80)
-
-                    pre_result = await self._send_and_collect(
-                        client,
-                        session.prompts.get("pre")
-                        or session.prompts.get("precompression", ""),
-                        log_file,
-                        session_logger,
-                        timeout=300,
-                    )
-                    responses.append({"phase": "pre_compression", **pre_result})
-                    milestones.append("pre_compression")
-
-                    total_tokens_estimate += len(pre_result["response"]) // 4
-                    stats["pre_compression_tokens_estimate"] = total_tokens_estimate
-
-                    # Phase 3: Deep-dive prompts (loop until token limit or compression)
-                    self.logger.info("=" * 80)
-                    self.logger.info("PHASE 3: Deep-Dive Analysis")
-                    self.logger.info("=" * 80)
-
-                    deep_dive_count = 0
-
-                    while deep_dive_count < self.max_turns:
-                        deep_dive_count += 1
-                        self.logger.info(f"Deep-dive iteration #{deep_dive_count}")
-
-                        deep_result = await self._send_and_collect(
-                            client,
-                            session.prompts.get("deep")
-                            or session.prompts.get("deepdive", ""),
-                            log_file,
-                            session_logger,
-                            timeout=300,
-                        )
-                        responses.append(
-                            {"phase": f"deep_dive_{deep_dive_count}", **deep_result}
-                        )
-
-                        total_tokens_estimate += len(deep_result["response"]) // 4
-                        stats[f"deep_dive_{deep_dive_count}_tokens"] = (
-                            total_tokens_estimate
-                        )
-
-                        # Log token usage
-                        hit_limit = deep_result["hit_token_limit"]
-                        self.logger.info(
-                            f"📊 Token estimate: {total_tokens_estimate:,} / {self.max_tokens:,} ({total_tokens_estimate / self.max_tokens * 100:.1f}%)"
-                        )
-                        self.logger.info(
-                            f"📊 Stop reason: {deep_result.get('stop_reason', 'unknown')} | Hit token limit: {hit_limit}"
-                        )
-                        self.logger.info(
-                            f"📊 Turn: {deep_dive_count} / {self.max_turns}"
-                        )
-                        session_logger.log_context_stats(
-                            f"{total_tokens_estimate}/{self.max_tokens}",
-                            f"Tokens: {total_tokens_estimate:,} ({total_tokens_estimate / self.max_tokens * 100:.1f}%)",
-                        )
-
-                        # Check if we hit token limit (reported by iFlow SDK)
-                        if hit_limit:
+                for conn_attempt in range(max_connection_attempts):
+                    try:
+                        # Attempt to create and connect client using context manager
+                        async with IFlowClient(options) as client:
                             self.logger.info(
-                                "🔴 Token limit reached - iFlow will compress context on next interaction"
+                                f"Successfully connected to iFlow on attempt {conn_attempt + 1}"
                             )
-                            compression_detected = True
-                            break
+                            milestones.append("sdk_connected")
+                            connected = True
 
-                        # FALLBACK: Check if our estimate exceeds limit (even if iFlow doesn't report it)
-                        if total_tokens_estimate >= self.max_tokens:
-                            self.logger.info(
-                                f"🔴 Token estimate exceeded limit ({total_tokens_estimate:,} >= {self.max_tokens:,}) - proceeding to memory-only evaluation"
+                            # Phase 1: Initialize repository with /init
+                            self.logger.info("=" * 80)
+                            self.logger.info("PHASE 1: Repository Initialization")
+                            self.logger.info("=" * 80)
+
+                            init_result = await self._send_and_collect(
+                                client, "/init", log_file, session_logger, timeout=600
                             )
-                            compression_detected = True
-                            break
+                            responses.append({"phase": "init", **init_result})
+                            milestones.append("repo_initialized")
 
-                        # Check if approaching limit (90% of max)
-                        if total_tokens_estimate > self.max_tokens * 0.9:
-                            self.logger.info(
-                                f"⚠️  Approaching token limit: {total_tokens_estimate:,} / {self.max_tokens:,}"
+                            # Estimate tokens (rough: 1 token ≈ 4 chars)
+                            total_tokens_estimate += len(init_result["response"]) // 4
+                            stats["init_tokens_estimate"] = total_tokens_estimate
+
+                            # Phase 2: Pre-compression prompt
+                            self.logger.info("=" * 80)
+                            self.logger.info("PHASE 2: Pre-Compression Analysis")
+                            self.logger.info("=" * 80)
+
+                            pre_result = await self._send_and_collect(
+                                client,
+                                session.prompts.get("pre")
+                                or session.prompts.get("precompression", ""),
+                                log_file,
+                                session_logger,
+                                timeout=300,
+                            )
+                            responses.append({"phase": "pre_compression", **pre_result})
+                            milestones.append("pre_compression")
+
+                            total_tokens_estimate += len(pre_result["response"]) // 4
+                            stats["pre_compression_tokens_estimate"] = (
+                                total_tokens_estimate
                             )
 
-                    milestones.append("deep_dive_complete")
-                    stats["deep_dive_iterations"] = deep_dive_count
+                            # Phase 3: Deep-dive prompts (loop until token limit or compression)
+                            self.logger.info("=" * 80)
+                            self.logger.info("PHASE 3: Deep-Dive Analysis")
+                            self.logger.info("=" * 80)
 
-                    # Phase 4: Memory-only evaluation
-                    self.logger.info("=" * 80)
-                    self.logger.info("PHASE 4: Memory-Only Evaluation")
-                    self.logger.info("=" * 80)
+                            deep_dive_count = 0
 
-                    memory_result = await self._send_and_collect(
-                        client,
-                        session.prompts["memory_only"],
-                        log_file,
-                        session_logger,
-                        timeout=300,
+                            while deep_dive_count < self.max_turns:
+                                deep_dive_count += 1
+                                self.logger.info(
+                                    f"Deep-dive iteration #{deep_dive_count}"
+                                )
+
+                                deep_result = await self._send_and_collect(
+                                    client,
+                                    session.prompts.get("deep")
+                                    or session.prompts.get("deepdive", ""),
+                                    log_file,
+                                    session_logger,
+                                    timeout=300,
+                                )
+                                responses.append(
+                                    {
+                                        "phase": f"deep_dive_{deep_dive_count}",
+                                        **deep_result,
+                                    }
+                                )
+
+                                total_tokens_estimate += (
+                                    len(deep_result["response"]) // 4
+                                )
+                                stats[f"deep_dive_{deep_dive_count}_tokens"] = (
+                                    total_tokens_estimate
+                                )
+
+                                # Log token usage
+                                hit_limit = deep_result["hit_token_limit"]
+                                self.logger.info(
+                                    f"📊 Token estimate: {total_tokens_estimate:,} / {self.max_tokens:,} ({total_tokens_estimate / self.max_tokens * 100:.1f}%)"
+                                )
+                                self.logger.info(
+                                    f"📊 Stop reason: {deep_result.get('stop_reason', 'unknown')} | Hit token limit: {hit_limit}"
+                                )
+                                self.logger.info(
+                                    f"📊 Turn: {deep_dive_count} / {self.max_turns}"
+                                )
+                                session_logger.log_context_stats(
+                                    f"{total_tokens_estimate}/{self.max_tokens}",
+                                    f"Tokens: {total_tokens_estimate:,} ({total_tokens_estimate / self.max_tokens * 100:.1f}%)",
+                                )
+
+                                # Check if we hit token limit (reported by iFlow SDK)
+                                if hit_limit:
+                                    self.logger.info(
+                                        "🔴 Token limit reached - iFlow will compress context on next interaction"
+                                    )
+                                    compression_detected = True
+                                    break
+
+                                # FALLBACK: Check if our estimate exceeds limit (even if iFlow doesn't report it)
+                                if total_tokens_estimate >= self.max_tokens:
+                                    self.logger.info(
+                                        f"🔴 Token estimate exceeded limit ({total_tokens_estimate:,} >= {self.max_tokens:,}) - proceeding to memory-only evaluation"
+                                    )
+                                    compression_detected = True
+                                    break
+
+                                # Check if approaching limit (90% of max)
+                                if total_tokens_estimate > self.max_tokens * 0.9:
+                                    self.logger.info(
+                                        f"⚠️  Approaching token limit: {total_tokens_estimate:,} / {self.max_tokens:,}"
+                                    )
+
+                            milestones.append("deep_dive_complete")
+                            stats["deep_dive_iterations"] = deep_dive_count
+
+                            # Phase 4: Memory-only evaluation
+                            self.logger.info("=" * 80)
+                            self.logger.info("PHASE 4: Memory-Only Evaluation")
+                            self.logger.info("=" * 80)
+
+                            memory_result = await self._send_and_collect(
+                                client,
+                                session.prompts["memory_only"],
+                                log_file,
+                                session_logger,
+                                timeout=300,
+                            )
+                            responses.append({"phase": "memory_only", **memory_result})
+                            milestones.append("memory_only")
+
+                            # Phase 5: Evaluator questions
+                            self.logger.info("=" * 80)
+                            self.logger.info("PHASE 5: Evaluator Questions")
+                            self.logger.info("=" * 80)
+
+                            eval_result = await self._send_and_collect(
+                                client,
+                                session.prompts.get("eval")
+                                or session.prompts.get("evaluator_set", ""),
+                                log_file,
+                                session_logger,
+                                timeout=300,
+                            )
+                            responses.append({"phase": "evaluation", **eval_result})
+                            milestones.append("evaluation_complete")
+
+                            milestones.append("session_complete")
+                            break  # Successfully completed session, exit retry loop
+
+                    except Exception as conn_error:
+                        last_error = conn_error
+                        if conn_attempt < max_connection_attempts - 1:
+                            wait_time = connection_delay * (2**conn_attempt)
+                            self.logger.warning(
+                                f"Connection attempt {conn_attempt + 1} failed: {conn_error}. "
+                                f"Retrying in {wait_time}s..."
+                            )
+                            await asyncio.sleep(wait_time)
+                        else:
+                            # Last attempt failed
+                            self.logger.error(
+                                f"Failed to connect after {max_connection_attempts} attempts: {conn_error}"
+                            )
+                            raise AgentExecutionError(
+                                self.name.value,
+                                f"Failed to connect: Failed to initialize protocol: {conn_error}",
+                            ) from conn_error
+
+                if not connected:
+                    raise AgentExecutionError(
+                        self.name.value,
+                        f"Failed to connect: Could not establish connection to iFlow WebSocket server. Last error: {last_error}",
                     )
-                    responses.append({"phase": "memory_only", **memory_result})
-                    milestones.append("memory_only")
-
-                    # Phase 5: Evaluator questions
-                    self.logger.info("=" * 80)
-                    self.logger.info("PHASE 5: Evaluator Questions")
-                    self.logger.info("=" * 80)
-
-                    eval_result = await self._send_and_collect(
-                        client,
-                        session.prompts.get("eval")
-                        or session.prompts.get("evaluator_set", ""),
-                        log_file,
-                        session_logger,
-                        timeout=300,
-                    )
-                    responses.append({"phase": "evaluation", **eval_result})
-                    milestones.append("evaluation_complete")
-
-                    milestones.append("session_complete")
 
         except Exception as e:
             self.logger.error(f"Session error: {e}", exc_info=True)
-            raise AgentExecutionError(self.name.value, f"Session error: {e}")
+            raise AgentExecutionError(self.name.value, f"Session error: {e}") from e
 
         # Prepare final statistics
         stats.update(

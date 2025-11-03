@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlmodel import Session
 
@@ -80,7 +80,7 @@ async def download_artifact(
 
     except (OSError, ValueError) as e:
         logger.error(f"Path resolution error: {e}")
-        raise HTTPException(status_code=400, detail="Invalid file path")
+        raise HTTPException(status_code=400, detail="Invalid file path") from e
 
     # Check if file exists
     if not file_path.exists():
@@ -112,6 +112,7 @@ async def download_artifact(
 @router.get("/{task_id}/bundle")
 async def download_task_bundle(
     task_id: UUID,
+    background_tasks: BackgroundTasks,
     db: DatabaseManager = Depends(get_db_manager),
 ) -> FileResponse:
     """Download a zip bundle of all artifacts for a task."""
@@ -139,11 +140,16 @@ async def download_task_bundle(
 
         with zipfile.ZipFile(temp_zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
             # Add task metadata
+            task_status = (
+                task_db.status.value
+                if hasattr(task_db.status, "value")
+                else str(task_db.status)
+            )
             task_info = {
                 "task_id": str(task_id),
                 "repo": task_db.repo,
                 "pr_number": task_db.pr_number,
-                "status": task_db.status.value,
+                "status": task_status,
                 "agents": task_db.agents,
                 "created_at": task_db.created_at.isoformat(),
             }
@@ -161,11 +167,16 @@ async def download_task_bundle(
                 )
 
                 # Add agent run metadata
+                agent_status = (
+                    agent_run.status.value
+                    if hasattr(agent_run.status, "value")
+                    else str(agent_run.status)
+                )
                 agent_info = {
                     "agent": agent_name,
-                    "status": agent_run.status.value,
-                    "milestones": agent_run.milestones,
-                    "stats": agent_run.stats,
+                    "status": agent_status,
+                    "milestones": agent_run.milestones or {},
+                    "stats": agent_run.stats or {},
                     "created_at": agent_run.created_at.isoformat(),
                 }
 
@@ -174,39 +185,53 @@ async def download_task_bundle(
                 )
 
                 # Add artifact files
-                for artifact_name, artifact_path in agent_run.artifacts.items():
-                    file_path = Path(artifact_path)
-                    if file_path.exists() and file_path.is_file():
-                        try:
-                            # Add file to zip with agent-specific path
-                            zip_path = f"{agent_name}/{artifact_name}{file_path.suffix}"
-                            zipf.write(str(file_path), zip_path)
-                            logger.debug(f"Added {file_path} as {zip_path}")
-                        except Exception as e:
-                            logger.warning(f"Failed to add {file_path} to bundle: {e}")
-                    else:
-                        logger.warning(f"Artifact file not found: {artifact_path}")
+                # Check if artifacts exist and is a dict
+                if agent_run.artifacts and isinstance(agent_run.artifacts, dict):
+                    for artifact_name, artifact_path in agent_run.artifacts.items():
+                        if not artifact_path:
+                            continue
+                        file_path = Path(artifact_path)
+                        if file_path.exists() and file_path.is_file():
+                            try:
+                                # Add file to zip with agent-specific path
+                                zip_path = (
+                                    f"{agent_name}/{artifact_name}{file_path.suffix}"
+                                )
+                                zipf.write(str(file_path), zip_path)
+                                logger.debug(f"Added {file_path} as {zip_path}")
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to add {file_path} to bundle: {e}"
+                                )
+                        else:
+                            logger.warning(f"Artifact file not found: {artifact_path}")
+                else:
+                    logger.debug(f"No artifacts found for agent {agent_name}")
 
         # Return the zip file
         bundle_filename = f"task_{task_id}_bundle.zip"
+
+        # Schedule cleanup after response is sent
+        background_tasks.add_task(_cleanup_temp_file_sync, temp_zip_path)
 
         return FileResponse(
             path=temp_zip_path,
             media_type="application/zip",
             filename=bundle_filename,
             headers={"Cache-Control": "no-cache"},
-            background=_cleanup_temp_file(temp_zip_path),  # Cleanup after sending
         )
 
     except Exception as e:
-        logger.error(f"Failed to create bundle for task {task_id}: {e}")
+        logger.error(f"Failed to create bundle for task {task_id}: {e}", exc_info=True)
         # Cleanup temp file on error
         if "temp_zip_path" in locals() and os.path.exists(temp_zip_path):
             try:
                 os.unlink(temp_zip_path)
-            except:
-                pass
-        raise HTTPException(status_code=500, detail="Failed to create bundle")
+            except Exception as cleanup_error:
+                logger.warning(f"Failed to cleanup temp file: {cleanup_error}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to create bundle: {e!s}"
+        ) from e
 
 
 @router.get("/{task_id}/list")
@@ -291,15 +316,11 @@ def _get_media_type(file_path: Path) -> str:
     return media_types.get(suffix, "application/octet-stream")
 
 
-def _cleanup_temp_file(file_path: str):
-    """Background task to cleanup temporary files."""
-
-    def cleanup():
-        try:
-            if os.path.exists(file_path):
-                os.unlink(file_path)
-                logger.debug(f"Cleaned up temporary file: {file_path}")
-        except Exception as e:
-            logger.warning(f"Failed to cleanup temp file {file_path}: {e}")
-
-    return cleanup
+def _cleanup_temp_file_sync(file_path: str):
+    """Synchronous cleanup function for background tasks."""
+    try:
+        if os.path.exists(file_path):
+            os.unlink(file_path)
+            logger.debug(f"Cleaned up temporary file: {file_path}")
+    except Exception as e:
+        logger.warning(f"Failed to cleanup temp file {file_path}: {e}")
